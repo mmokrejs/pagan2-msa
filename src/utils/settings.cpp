@@ -22,6 +22,14 @@
 #include <iostream>
 #include <fstream>
 #include "utils/settings.h"
+
+// Local build marker. Empty unless the build defines MSP_PATCHLEVEL, so a
+// stock build prints exactly what upstream prints.
+#include "utils/msp_patchlevel.h"
+#ifndef MSP_PATCHLEVEL
+#define MSP_PATCHLEVEL ""
+#endif
+
 #include "utils/check_version.h"
 #include "utils/log_output.h"
 
@@ -527,6 +535,8 @@ void Settings::print_msg()
 {
     stringstream ss;
     ss<<"\nPAGAN2 v."<<version<<" ("<<date<<"). (C) 2010-2019 by Ari Löytynoja <ari.loytynoja@gmail.com>.\n";
+    if(string(MSP_PATCHLEVEL).length()>0)
+        ss<<MSP_PATCHLEVEL;
     ss<<" This program is provided \"as-is\", with NO WARRANTY whatsoever; this is a development version\n and may contain bugs.\n";
     Log_output::write_out(ss.str(),0);
 }
@@ -535,6 +545,8 @@ string Settings::print_log_msg()
 {
     stringstream tmp;
     tmp<<"\n# PAGAN2 v."<<version<<" ("<<date<<"). (C) 2010-2019 by Ari Löytynoja <ari.loytynoja@gmail.com>.\n";
+    if(string(MSP_PATCHLEVEL).length()>0)
+        tmp<<MSP_PATCHLEVEL;
     tmp<<"# This program is provided \"as-is\", with NO WARRANTY whatsoever; this is a development version\n# and may contain bugs.\n";
     return tmp.str();
 }

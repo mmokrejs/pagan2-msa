@@ -19,6 +19,7 @@
  ***************************************************************************/
 
 #include "utils/check_version.h"
+#include "utils/msp_patchlevel.h"
 #include "utils/log_output.h"
 
 #include <stdio.h>
@@ -38,7 +39,12 @@ Check_version::Check_version(float version)
 {
 
     stringstream ss;
-    ss<<"\nThis is PAGAN v."<<version<<".\nChecking if updates are available at https://github.com/ariloytynoja/pagan-msa.\n";
+    ss<<"\nThis is PAGAN v."<<version<<".\n";
+#ifdef MSP_PATCHLEVEL
+    if(string(MSP_PATCHLEVEL).length()>0)
+        ss<<MSP_PATCHLEVEL;
+#endif
+    ss<<"Checking if updates are available at https://github.com/ariloytynoja/pagan-msa.\n";
     Log_output::write_out(ss.str(),0);
 
 #ifdef NO_CURL
