@@ -456,6 +456,32 @@ void Find_anchors::define_tunnel(std::vector<Substring_hit> *hits,std::vector<in
         lower_bound->insert(lower_bound->begin(),y);
     }
 
+    // Tunnel_matrix (tunnel_matrix.h) requires both bounds to be
+    // monotonically increasing -- its own doc comment says so -- but the
+    // prev_y/m_count ratchet above only ratchets forward across a long
+    // enough run of consecutive matching diagonal positions (m_count>=width);
+    // between such runs a column's raw y can fall below the previous
+    // column's, which define_tunnel_with_overlapping_hits() above already
+    // guards against explicitly ("must not go zigzag") for the NCBI-toolkit
+    // anchor path. This exonerate-based path had no equivalent guard, so a
+    // read whose hit fragments are scattered or reordered on the diagonal
+    // (e.g. many short fragments from internal N-runs, or an ambiguous
+    // placement tried against an atypical candidate node) can produce a
+    // non-monotonic tunnel. Tunnel_matrix::initTunnelEntries() then indexes
+    // outside the built range of a column and throws std::out_of_range,
+    // aborting the whole batch (measured: SIGABRT losing thousands of reads
+    // per pagan2 invocation). Clamping here can only WIDEN the tunnel at the
+    // columns that would otherwise have narrowed illegally, never exclude a
+    // cell the raw computation already included, so it cannot make a correct
+    // alignment worse -- it only fixes what would otherwise crash.
+    for(int i=1;i<(int)upper_bound->size();i++)
+        if(upper_bound->at(i) < upper_bound->at(i-1))
+            upper_bound->at(i) = upper_bound->at(i-1);
+
+    for(int i=1;i<(int)lower_bound->size();i++)
+        if(lower_bound->at(i) < lower_bound->at(i-1))
+            lower_bound->at(i) = lower_bound->at(i-1);
+
     /*
     if(Settings::noise>0)
     {
