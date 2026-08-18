@@ -1,31 +1,24 @@
-// Standalone, deterministic reproducer for the check_hits_order_conflict()
-// out_of_range abort (see docs/issues/pagan2_quirks.md in the
-// mutation_scatter_plot repo for the production incident this fixes).
+// Synthetic, deterministic reproducer for the check_hits_order_conflict()
+// std::out_of_range abort.
 //
-// Bypasses Exonerate entirely and calls the crashing function directly with
-// a hand-built Substring_hit whose start_site lands exactly at len1/len2 --
-// the same boundary a real Exonerate hit landed on in production (confirmed
-// from a core dump: len1=836 at the throw, and a q_end of 2508 for the same
-// read elsewhere in the same call chain; 2508/3 == 836 exactly, so the hit's
-// reported end coincided with the sequence's own length after codon
-// translation -- consistent with Exonerate's own coordinate being one past
-// the last valid 0-based index).
+// The function walks [start_site, start_site+length) over hit_site1/
+// hit_site2, two vector<bool> sized to each sequence's length, using .at().
+// An Exonerate hit whose start_site lands at (or past) the end of the
+// sequence therefore throws, and nothing catches it: the whole batch of
+// queries being aligned dies, not just the one query whose anchor was out
+// of range.
 //
-// We cannot ship the real GISAID read that triggered this in production, so
-// this constructs the same boundary condition directly instead of trying to
-// coax Exonerate into reproducing it from a synthetic FASTA -- an approach
-// that was tried first (a hand-built ~1274-codon synthetic reference/query
-// pair, then a 60-read randomized stress batch) and did not reproduce it:
-// the trigger is a specific Exonerate coordinate edge case, not a general
-// property of divergent/gappy input.
+// This calls the function directly with a hand-built Substring_hit rather
+// than going through Exonerate, because the trigger is a specific hit
+// coordinate rather than any general property of the input sequences --
+// driving it from a FASTA would depend on Exonerate's own behaviour and
+// would not be a stable regression test.  The boundary chosen here,
+// start_site_1 == len1, is exactly one past the last valid 0-based index.
 //
-// Build (from src/, after a normal build has produced the listed .o files;
-// test_check_version_stub.cpp is only needed if check_version.o was not
-// built, e.g. libcurl-dev is unavailable -- see check_version.cpp's own
-// #include <curl/curl.h>, unrelated to this fix):
+// Build (from src/, after a normal build has produced the listed .o files):
 //   g++ -std=c++11 -w -Iutils -Imain -I. -o test_check_hits_order_conflict \
-//     test_check_hits_order_conflict.cpp test_check_version_stub.cpp \
-//     find_anchors.o settings.o settings_handle.o log_output.o text_utils.o \
+//     test_check_hits_order_conflict.cpp find_anchors.o settings.o \
+//     settings_handle.o log_output.o text_utils.o check_version.o \
 //     -lboost_program_options -lboost_regex -lboost_thread -lboost_system \
 //     -lgomp -lm -lz -lpthread -ldl
 // Run: ./test_check_hits_order_conflict
@@ -61,15 +54,14 @@ int main(int argc, char *argv[])
     int len1 = (int)seq1.length();
     int len2 = (int)seq2.length();
 
-    // ---- Scenario 1: boundary hit -- this is what crashed in production ----
+    // ---- Scenario 1: the out-of-range boundary hit ----
     // start_site_1 == len1 (one past the last valid 0-based index).  length
     // must survive "length -= trim*2" and still be positive, or the inner
     // loop's own bound (start_site_1+length) never exceeds start_site_1 and
     // the loop body -- where the .at() call that actually throws lives --
-    // never runs even with the bug live.  (A short length was the mistake in
-    // the first draft of this reproducer: it silently passed against BOTH
-    // the buggy and the fixed binary, which would have shipped a test that
-    // proves nothing.)
+    // never runs even with the bug present.  A length of, say, 1 makes this
+    // test pass against the buggy code too, i.e. proves nothing; keep it
+    // comfortably above 2*exonerate-hit-trim.
     {
         vector<Substring_hit> hits;
         Substring_hit h;

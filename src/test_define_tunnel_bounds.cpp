@@ -1,6 +1,5 @@
-// Standalone reproducer for the Find_anchors::define_tunnel() out_of_range
-// abort at utils/find_anchors.cpp:365 (see docs/issues/pagan2_quirks.md in
-// the mutation_scatter_plot repo for the production incident).
+// Synthetic reproducer for the Find_anchors::define_tunnel() out_of_range
+// abort.
 //
 // index1/index2 hold the GAPPED position of each NON-GAP character (so
 // index1.size() == count of non-gap chars in str1), but start_site_1 is a
@@ -13,9 +12,15 @@
 // a short string with a gap near the end, and a hit that legitimately fits
 // the gapped length but overruns the ungapped index.
 //
-// Build (from src/, after a normal build has produced find_anchors.o):
+// Build (from src/, after a normal build has produced the listed .o files):
 //   g++ -std=c++11 -w -Iutils -Imain -I. -o test_define_tunnel_bounds \
-//     test_define_tunnel_bounds.cpp find_anchors.o
+//     test_define_tunnel_bounds.cpp find_anchors.o settings.o \
+//     settings_handle.o log_output.o text_utils.o check_version.o \
+//     -lboost_program_options -lboost_regex -lboost_thread -lboost_system \
+//     -lgomp -lm -lz -lpthread -ldl
+// Run: ./test_define_tunnel_bounds
+//   Exit 0 + a PASS line on the fixed code; SIGABRT (std::out_of_range) on
+//   the pre-fix code.
 #include <iostream>
 #include <vector>
 #include <string>
