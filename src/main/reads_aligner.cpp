@@ -1927,6 +1927,23 @@ void Reads_aligner::find_targets_for_query(Node *root, Fasta_entry *read, Model_
             string target_node = it->first;
 
             map<string,Node*>::iterator nit = nodes.find(target_node);
+            if(nit == nodes.end())
+            {
+                // Exonerate reported a hit against a node name that this
+                // tree's own node map doesn't have (e.g. a stale target
+                // index from an earlier tree revision). nit->second on
+                // map::end() is undefined behaviour -- it does not always
+                // crash right here, it can silently read whatever memory
+                // sits at the map's sentinel and hand read_match_score() a
+                // garbage Node* that then SIGSEGVs two calls later inside
+                // get_distance_to_parent(), far from the actual cause.
+                // Skip this candidate rather than scoring an invalid node.
+                stringstream ss;
+                ss<<"Exonerate hit for read "<<read->name<<" names node '"<<target_node
+                  <<"' which is not in this tree; skipping this candidate.\n";
+                Log_output::write_out(ss.str(),0);
+                continue;
+            }
             double score = this->read_match_score( nit->second, read, mf);
 
             stringstream ss;
