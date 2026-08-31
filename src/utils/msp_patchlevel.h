@@ -12,8 +12,8 @@
 "    +parsimony-state  fixes std::out_of_range abort on an invalid parsimony\n" \
 "                      state (lost the whole batch); PR ariloytynoja/pagan2-msa#6\n" \
 "    +temp-dir-env     honours TMPDIR/TMP/TEMP for scratch instead of always\n" \
-"                      writing to /tmp; PR not yet opened\n" \
+"                      writing to /tmp; PR ariloytynoja/pagan2-msa#9\n" \
 "    +exonerate-tmp    deletes the Exonerate target-preselection scratch pair,\n" \
-"                      which leaked one pair per run; PR not yet opened\n" \
+"                      which leaked one pair per run; PR ariloytynoja/pagan2-msa#10\n" \
 "  NOT an upstream release; see docs/issues/pagan2_quirks.md\n"
 #endif
