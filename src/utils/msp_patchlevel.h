@@ -4,7 +4,7 @@
 // NOT upstream. Kept on the local/integration branch only, never on the
 // branches that back the pull requests.
 #define MSP_PATCHLEVEL \
-"  local build: mutation_scatter_plot patch set 2026-08-31.3\n" \
+"  local build: mutation_scatter_plot patch set 2026-08-31.4\n" \
 "    +anchor-file      external anchors from a file\n" \
 "                      PR ariloytynoja/pagan2-msa#5\n" \
 "    +build-no-ncbi    builds without the NCBI toolkit / libcurl\n" \
@@ -20,5 +20,8 @@
 "    +exonerate-line   reads Exonerate output lines of any length; a 256-byte\n" \
 "                      buffer silently dropped 53% of anchors when sequence\n" \
 "                      names are long; PR ariloytynoja/pagan2-msa#12\n" \
+"    +readlink-guard   checks readlink()'s return before indexing with it;\n" \
+"                      -1 wrote one byte in front of a stack buffer\n" \
+"                      PR ariloytynoja/pagan2-msa#13\n" \
 "  NOT an upstream release; see docs/issues/pagan2_quirks.md\n"
 #endif
