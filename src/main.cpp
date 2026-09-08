@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 #include <ctime>
+#include <unistd.h>
 #include "utils/settings.h"
 #include "utils/settings_handle.h"
 #include "utils/log_output.h"
@@ -89,7 +90,34 @@ int main(int argc, char *argv[])
         Log_output::write_out("\nThe analysis started: " +string( asctime( localtime( &s_time ) ) )+"\n",0);
     }
 
-    srand(time(0));
+    // Seed per PROCESS, not per second.
+    //
+    // The temp files that Exonerate_queries, Mafft_alignment, BppAncestors,
+    // Bppdist_tree, Raxml_tree and FastTree_tree write are named from rand():
+    // "q<r>.fas", "t<r>.fas", "m<r>.fas" and so on, all in the one directory
+    // returned by get_temp_dir() (i.e. /tmp, or --temp-folder).  Each of those
+    // sites already guards against reusing a name with a check-then-create
+    // retry loop -- for example Exonerate_queries::write_exonerate_input():
+    //
+    //     while(true) { ... if(!q_file && !t_file) { open; break; } *r = rand(); }
+    //
+    // With srand(time(0)) that loop CANNOT diverge between two pagan2
+    // processes started in the same second: identical seed means identical
+    // rand() sequence, so both walk the same candidate names in the same
+    // order, both find the name free, and both create it.  Each then runs its
+    // helper on the other's data and delete_files() removes the other's
+    // files.  Nothing crashes; the alignment is simply of the wrong
+    // sequences, or comes back empty.
+    //
+    // Mixing in the pid gives every process its own sequence, which is what
+    // the existing retry loops were written to assume.  getpid() adds no new
+    // portability constraint: <unistd.h> is already used in the tree (see
+    // utils/bppancestors.cpp) and there are no Windows guards anywhere in it.
+    //
+    // This does not make a run reproducible and is not meant to -- rand() is
+    // also used for stochastic backtracking in viterbi_alignment.cpp, which
+    // was never reproducible under a clock-derived seed either.
+    srand(static_cast<unsigned>(time(0)) ^ static_cast<unsigned>(getpid()));
     clock_t analysis_start_time=clock();
 
 
