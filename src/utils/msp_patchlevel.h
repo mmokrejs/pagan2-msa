@@ -33,5 +33,11 @@
 "                      alignment simply wrong or empty. Seeded with the pid\n" \
 "                      mixed in, which is what the existing retry loops assume.\n" \
 "                      Submitted as PR ariloytynoja/pagan2-msa#17, still open.\n" \
+"    +exonerate-probe  test_executable() is called from INSIDE the alignment\n" \
+"                      path, so a probe that runs exonerate twice was paid per\n" \
+"                      PAIRWISE ALIGNMENT. Replaced by a memoised PATH walk:\n" \
+"                      at four queries 147 -> 51 execve, 71 -> 23 exonerate\n" \
+"                      (the 23 are the real anchoring runs), out.fas\n" \
+"                      byte-identical.\n" \
 "  NOT an upstream release; see docs/issues/pagan2_quirks.md\n"
 #endif
