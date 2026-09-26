@@ -20,6 +20,7 @@
 
 #include "exonerate_queries.h"
 #include "utils/tool_probe.h"
+#include "utils/child_pipe.h"
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -37,6 +38,34 @@
 
 using namespace std;
 using namespace ppa;
+
+// One exonerate invocation as an ARGUMENT VECTOR, run by child_pipe_open()
+// without a shell (see utils/child_pipe.h for why: the per-query /bin/sh was
+// the step blocked on the network filesystem). `extra_flags` is constant
+// flag text from this file ("-T dna -Q dna", "-m affine:local ..."); the file
+// names go in as single arguments, so no quoting is involved. `*command_text`
+// receives the same command spelled for the log line.
+static vector<string> exonerate_args(const string &exoneratepath,
+                                     const string &tmp_dir, int r,
+                                     const string &extra_flags,
+                                     string *command_text)
+{
+    stringstream q, t;
+    q << tmp_dir << "q" << r << ".fas";
+    t << tmp_dir << "t" << r << ".fas";
+    vector<string> a;
+    a.push_back(exoneratepath + "exonerate");
+    a.push_back("-q"); a.push_back(q.str());
+    a.push_back("-t"); a.push_back(t.str());
+    a.push_back("--showalignment"); a.push_back("no");
+    a.push_back("--showsugar"); a.push_back("yes");
+    a.push_back("--showvulgar"); a.push_back("no");
+    child_pipe_append_flags(&a, extra_flags);
+    command_text->clear();
+    for (size_t i = 0; i < a.size(); i++)
+        *command_text += (i ? " " : "") + a[i];
+    return a;
+}
 
 Exonerate_queries::Exonerate_queries()
 {
@@ -492,17 +521,19 @@ void Exonerate_queries::preselect_targets(map<string,string> *target_sequences, 
 
     // exonerate command for local alignment
 
-    stringstream command;
-    command <<exoneratepath << "exonerate -q "+tmp_dir+"q"<<r<<".fas -t "+tmp_dir+"t"<<r<<".fas --showalignment no --showsugar yes --showvulgar no "<<data_type<<" 2>&1";
+    string command;
+    vector<string> exonerate_argv =
+        exonerate_args(exoneratepath, tmp_dir, r, data_type, &command);
 
-    FILE *fpipe;
-    if ( !(fpipe = (FILE*)popen(command.str().c_str(),"r")) )
+    Child_pipe child;
+    if ( !child_pipe_open(exonerate_argv, &child) )
     {
         Log_output::write_out("Problems with exonerate pipe.\nExiting.\n",0);
         exit(1);
     }
+    FILE *fpipe = child.fp;
 
-    Log_output::write_out("Exonerate_queries: command: "+command.str()+"\n",2);
+    Log_output::write_out("Exonerate_queries: command: "+command+"\n",2);
 
     // read exonerate output, summing the multiple hit scores
 
@@ -513,7 +544,7 @@ void Exonerate_queries::preselect_targets(map<string,string> *target_sequences, 
     {
         this->read_output_line(&all_hits,line);
     }
-    pclose(fpipe);
+    child_pipe_close(&child);
 
     if(!Settings_handle::st.is("keep-temp-files"))
         this->delete_files(r);
@@ -716,20 +747,21 @@ void Exonerate_queries::local_alignment(map<string,string> *target_sequences, Fa
     if(is_dna)
         data_type = "-T dna -Q dna";
 
-    stringstream command;
-    if(is_local)
-        command <<exoneratepath << "exonerate -q "+tmp_dir+"q"<<r<<".fas -t "+tmp_dir+"t"<<r<<".fas --showalignment no --showsugar yes --showvulgar no "<<data_type<<" 2>&1";
-    else
-        command <<exoneratepath << "exonerate -q "+tmp_dir+"q"<<r<<".fas -t "+tmp_dir+"t"<<r<<".fas --showalignment no --showsugar yes --showvulgar no -m affine:local "<<data_type<<" 2>&1";
+    string command;
+    vector<string> exonerate_argv =
+        exonerate_args(exoneratepath, tmp_dir, r,
+                       is_local ? data_type : "-m affine:local " + data_type,
+                       &command);
 
-    Log_output::write_out("Exonerate_local: command: "+command.str()+"\n",2);
+    Log_output::write_out("Exonerate_local: command: "+command+"\n",2);
 
-    FILE *fpipe;
-    if ( !(fpipe = (FILE*)popen(command.str().c_str(),"r")) )
+    Child_pipe child;
+    if ( !child_pipe_open(exonerate_argv, &child) )
     {
         Log_output::write_out("Problems with exonerate pipe.\nExiting.\n",0);
         exit(1);
     }
+    FILE *fpipe = child.fp;
 
     // read exonerate output, summing the multiple hit scores
 
@@ -772,7 +804,7 @@ void Exonerate_queries::local_alignment(map<string,string> *target_sequences, Fa
             }
         }
     }
-    pclose(fpipe);
+    child_pipe_close(&child);
 
 
     Log_output::write_out("Exonerate_reads: "+read->name+" has "+Log_output::itos(hit_names.size())+" hits\n",2);
@@ -890,20 +922,21 @@ void Exonerate_queries::local_alignment(Node *root, Fasta_entry *read, multimap<
 
    // exonerate command for local alignment
 
-    stringstream command;
-    if(is_local)
-        command <<exoneratepath << "exonerate -q "+tmp_dir+"q"<<r<<".fas -t "+tmp_dir+"t"<<r<<".fas --showalignment no --showsugar yes --showvulgar no "<<data_type<<" 2>&1";
-    else
-        command <<exoneratepath << "exonerate -q "+tmp_dir+"q"<<r<<".fas -t "+tmp_dir+"t"<<r<<".fas --showalignment no --showsugar yes --showvulgar no -m affine:local "<<data_type<<" 2>&1";
+    string command;
+    vector<string> exonerate_argv =
+        exonerate_args(exoneratepath, tmp_dir, r,
+                       is_local ? data_type : "-m affine:local " + data_type,
+                       &command);
 
-    Log_output::write_out("Exonerate_local: command: "+command.str()+"\n",2);
+    Log_output::write_out("Exonerate_local: command: "+command+"\n",2);
 
-    FILE *fpipe;
-    if ( !(fpipe = (FILE*)popen(command.str().c_str(),"r")) )
+    Child_pipe child;
+    if ( !child_pipe_open(exonerate_argv, &child) )
     {
         Log_output::write_out("Problems with exonerate pipe.\nExiting.\n",0);
         exit(1);
     }
+    FILE *fpipe = child.fp;
 
     // read exonerate output, summing the multiple hit scores
 
@@ -946,7 +979,7 @@ void Exonerate_queries::local_alignment(Node *root, Fasta_entry *read, multimap<
             }
         }
     }
-    pclose(fpipe);
+    child_pipe_close(&child);
 
 
     Log_output::write_out("Exonerate_reads: "+read->name+" has "+Log_output::itos(hit_names.size())+" hits\n",2);
@@ -1042,22 +1075,20 @@ void Exonerate_queries::local_pairwise_alignment(string *str1,string *str2,vecto
 
     // exonerate command for local alignment
 
-    stringstream command;
-    command <<exoneratepath << "exonerate -q "+tmp_dir+"q"<<r<<".fas -t "+tmp_dir+"t"<<r<<".fas --showalignment no --showsugar yes --showvulgar no 2>&1";
+    string command;
+    vector<string> exonerate_argv =
+        exonerate_args(exoneratepath, tmp_dir, r, "", &command);
 
-    Log_output::write_out("Exonerate_pairwise: command: "+command.str()+"\n",2);
+    Log_output::write_out("Exonerate_pairwise: command: "+command+"\n",2);
 
 
-    FILE *fpipe;
-
-//    #pragma omp critical
-//    {
-    if ( !(fpipe = (FILE*)popen(command.str().c_str(),"r")) )
+    Child_pipe child;
+    if ( !child_pipe_open(exonerate_argv, &child) )
     {
         Log_output::write_out("Problems with exonerate pipe.\nExiting.\n",0);
         exit(1);
     }
-//    }
+    FILE *fpipe = child.fp;
 
     // read exonerate output, summing the multiple hit scores
 
@@ -1073,7 +1104,7 @@ void Exonerate_queries::local_pairwise_alignment(string *str1,string *str2,vecto
         if(valid)
             best_hits.push_back( h);
     }
-    pclose(fpipe);
+    child_pipe_close(&child);
 
 
     if(best_hits.size()>0)
