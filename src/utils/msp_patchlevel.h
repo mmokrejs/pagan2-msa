@@ -39,5 +39,9 @@
 "                      at four queries 147 -> 51 execve, 71 -> 23 exonerate\n" \
 "                      (the 23 are the real anchoring runs), out.fas\n" \
 "                      byte-identical.\n" \
+"    +exonerate-no-sh  exonerate ran through popen(3), i.e. a /bin/sh per\n" \
+"                      QUERY; it is now posix_spawn()ed with an argument\n" \
+"                      vector (utils/child_pipe.h). At six queries /bin/sh\n" \
+"                      execs 100 -> 2, out.fas and out.nhx_tree byte-identical.\n" \
 "  NOT an upstream release; see docs/issues/pagan2_quirks.md\n"
 #endif
