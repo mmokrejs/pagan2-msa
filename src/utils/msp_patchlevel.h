@@ -9,7 +9,7 @@
 // here no longer -- claiming them as local would misreport what this binary
 // is. What remains is the one fix that was never submitted.
 #define MSP_PATCHLEVEL \
-"  local build: mutation_scatter_plot patch set 2026-09-08, on upstream v1.6\n" \
+"  local build: mutation_scatter_plot patch set 2026-10-03, on upstream v1.6\n" \
 "    +tunnel-monotonic Find_anchors::define_tunnel() clamps non-monotonic\n" \
 "                      tunnel bounds instead of letting Tunnel_matrix throw\n" \
 "                      std::out_of_range and SIGABRT the whole batch.\n" \
@@ -43,5 +43,11 @@
 "                      QUERY; it is now posix_spawn()ed with an argument\n" \
 "                      vector (utils/child_pipe.h). At six queries /bin/sh\n" \
 "                      execs 100 -> 2, out.fas and out.nhx_tree byte-identical.\n" \
+"    +scoring-model    the model a read is scored with at the fixed\n" \
+"                      query-distance was rebuilt per read and per candidate\n" \
+"                      node (a codon model: ~71 MB, ~10.7 M log() cells); it\n" \
+"                      is built once per run. 40-read --codons guide-tree\n" \
+"                      batch: 59 s -> 50 s, +70 MB peak; the same rows as the\n" \
+"                      unpatched build. NOT submitted upstream.\n" \
 "  NOT an upstream release; see docs/issues/pagan2_quirks.md\n"
 #endif
