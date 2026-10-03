@@ -56,8 +56,10 @@ struct hit {
 class Exonerate_queries
 {
     static bool better (hit i,hit j) { return (i.score>j.score); }
+    static bool canonical_order (const hit& a,const hit& b);
 
-    void read_output_line(map<string,multimap<string,hit> > *all_hits, string line);
+    void read_sugar_hits(FILE *fpipe, vector<hit> *hits);
+    void add_output_hit(map<string,multimap<string,hit> > *all_hits, const hit& h);
     void find_hits_for_queries(map<string,multimap<string,hit> > *all_hits, vector<Fasta_entry> *reads, map<string,multimap<string,hit> > *best_hits, bool is_local=true);
 
     bool split_sugar_string(const std::string& row,hit *h);

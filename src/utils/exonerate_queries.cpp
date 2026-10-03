@@ -537,14 +537,14 @@ void Exonerate_queries::preselect_targets(map<string,string> *target_sequences, 
 
     // read exonerate output, summing the multiple hit scores
 
-    string line;
     map<string,multimap<string,hit> > all_hits;
 
-    while ( read_full_line( fpipe, &line ))
-    {
-        this->read_output_line(&all_hits,line);
-    }
+    vector<hit> sugar_hits;
+    this->read_sugar_hits(fpipe,&sugar_hits);
     child_pipe_close(&child);
+
+    for(vector<hit>::iterator hi = sugar_hits.begin(); hi != sugar_hits.end(); hi++)
+        this->add_output_hit(&all_hits,*hi);
 
     if(!Settings_handle::st.is("keep-temp-files"))
         this->delete_files(r);
@@ -577,12 +577,51 @@ void Exonerate_queries::preselect_targets(map<string,string> *target_sequences, 
 }
 
 
-void Exonerate_queries::read_output_line(map<string,multimap<string,hit> > *all_hits, string line)
+// exonerate does not print the hits of a run in a reproducible order: on one
+// unchanged query and target file, exonerate 2.4.0 printed the same set of
+// sugar lines in four different orders in twelve runs. Every reader of them
+// here is order-sensitive -- the hits on one target are folded keeping the
+// first of two opposite-strand hits that tie, `hit_names` keeps first-seen
+// order and std::sort is not stable -- so one batch of reads could be placed
+// differently, and aligned differently, from one run to the next. Reading all
+// hits first and putting them in this order makes the result a function of
+// the hits alone. Best score first, so the strand of a target's best single
+// hit is the one its other hits are summed into.
+bool Exonerate_queries::canonical_order(const hit& a,const hit& b)
 {
-    hit h;
-    bool valid = this->split_sugar_string(string(line),&h);
+    if(a.score != b.score)
+        return a.score > b.score;
+    if(a.query != b.query)
+        return a.query < b.query;
+    if(a.node != b.node)
+        return a.node < b.node;
+    if(a.q_start != b.q_start)
+        return a.q_start < b.q_start;
+    if(a.q_end != b.q_end)
+        return a.q_end < b.q_end;
+    if(a.t_start != b.t_start)
+        return a.t_start < b.t_start;
+    if(a.t_end != b.t_end)
+        return a.t_end < b.t_end;
+    if(a.q_strand != b.q_strand)
+        return a.q_strand < b.q_strand;
+    return a.t_strand < b.t_strand;
+}
 
-    if(valid)
+void Exonerate_queries::read_sugar_hits(FILE *fpipe, vector<hit> *hits)
+{
+    string line;
+    while ( read_full_line( fpipe, &line ))
+    {
+        hit h;
+        if( this->split_sugar_string(line,&h) )
+            hits->push_back(h);
+    }
+    sort(hits->begin(), hits->end(), Exonerate_queries::canonical_order);
+}
+
+void Exonerate_queries::add_output_hit(map<string,multimap<string,hit> > *all_hits, const hit& h)
+{
     {
 
         map<string,multimap<string,hit> >::iterator iter = all_hits->find(h.query);
@@ -765,16 +804,17 @@ void Exonerate_queries::local_alignment(map<string,string> *target_sequences, Fa
 
     // read exonerate output, summing the multiple hit scores
 
-    string line;
     map<string,hit> all_hits;
     vector<string> hit_names;
 
-    while ( read_full_line( fpipe, &line ))
-    {
-        hit h;
-        bool valid = split_sugar_string(string(line),&h);
+    vector<hit> sugar_hits;
+    this->read_sugar_hits(fpipe,&sugar_hits);
+    child_pipe_close(&child);
 
-        if(valid)
+    for(vector<hit>::iterator hi = sugar_hits.begin(); hi != sugar_hits.end(); hi++)
+    {
+        const hit& h = *hi;
+
         {
             map<string,hit>::iterator iter = all_hits.find(h.node);
             if( iter != all_hits.end() )
@@ -804,7 +844,6 @@ void Exonerate_queries::local_alignment(map<string,string> *target_sequences, Fa
             }
         }
     }
-    child_pipe_close(&child);
 
 
     Log_output::write_out("Exonerate_reads: "+read->name+" has "+Log_output::itos(hit_names.size())+" hits\n",2);
@@ -940,16 +979,17 @@ void Exonerate_queries::local_alignment(Node *root, Fasta_entry *read, multimap<
 
     // read exonerate output, summing the multiple hit scores
 
-    string line;
     map<string,hit> all_hits;
     vector<string> hit_names;
 
-    while ( read_full_line( fpipe, &line ))
-    {
-        hit h;
-        bool valid = split_sugar_string(string(line),&h);
+    vector<hit> sugar_hits;
+    this->read_sugar_hits(fpipe,&sugar_hits);
+    child_pipe_close(&child);
 
-        if(valid)
+    for(vector<hit>::iterator hi = sugar_hits.begin(); hi != sugar_hits.end(); hi++)
+    {
+        const hit& h = *hi;
+
         {
             map<string,hit>::iterator iter = all_hits.find(h.node);
             if( iter != all_hits.end() )
@@ -979,7 +1019,6 @@ void Exonerate_queries::local_alignment(Node *root, Fasta_entry *read, multimap<
             }
         }
     }
-    child_pipe_close(&child);
 
 
     Log_output::write_out("Exonerate_reads: "+read->name+" has "+Log_output::itos(hit_names.size())+" hits\n",2);
@@ -1092,18 +1131,8 @@ void Exonerate_queries::local_pairwise_alignment(string *str1,string *str2,vecto
 
     // read exonerate output, summing the multiple hit scores
 
-    string line;
     vector<hit> best_hits;
-
-    while ( read_full_line( fpipe, &line ))
-    {
-//        cout<<line;
-        hit h;
-        bool valid = split_sugar_string(string(line),&h);
-
-        if(valid)
-            best_hits.push_back( h);
-    }
+    this->read_sugar_hits(fpipe,&best_hits);
     child_pipe_close(&child);
 
 
