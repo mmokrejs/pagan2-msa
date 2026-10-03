@@ -9,7 +9,7 @@
 // here no longer -- claiming them as local would misreport what this binary
 // is. What remains is the one fix that was never submitted.
 #define MSP_PATCHLEVEL \
-"  local build: mutation_scatter_plot patch set 2026-10-03, on upstream v1.6\n" \
+"  local build: mutation_scatter_plot patch set 2026-10-04, on upstream v1.6\n" \
 "    +tunnel-monotonic Find_anchors::define_tunnel() clamps non-monotonic\n" \
 "                      tunnel bounds instead of letting Tunnel_matrix throw\n" \
 "                      std::out_of_range and SIGABRT the whole batch.\n" \
@@ -49,5 +49,12 @@
 "                      is built once per run. 40-read --codons guide-tree\n" \
 "                      batch: 59 s -> 50 s, +70 MB peak; the same rows as the\n" \
 "                      unpatched build. NOT submitted upstream.\n" \
+"    +hit-order        exonerate prints a run's hits in an order that\n" \
+"                      changes run to run, and the readers were order-\n" \
+"                      sensitive, so one batch was placed differently from\n" \
+"                      run to run (v1.6: 4 different out.fas in 6 runs of a\n" \
+"                      40-read batch). Hits are sorted into one order before\n" \
+"                      any is folded: 6 of 6 runs byte-identical.\n" \
+"                      NOT submitted upstream.\n" \
 "  NOT an upstream release; see docs/issues/pagan2_quirks.md\n"
 #endif
