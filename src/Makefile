@@ -320,6 +320,7 @@ text_utils.o: utils/text_utils.cpp utils/text_utils.h \
 	$(CXX) -c $(CXXFLAGS) $(INCPATH) -o text_utils.o utils/text_utils.cpp
 
 settings.o: utils/settings.cpp utils/settings.h \
+		utils/msp_patchlevel.h \
 		utils/check_version.h \
 		utils/log_output.h
 	$(CXX) -c $(CXXFLAGS) $(INCPATH) -o settings.o utils/settings.cpp
@@ -415,6 +416,7 @@ evol_model.o: utils/evol_model.cpp utils/evol_model.h \
 	$(CXX) -c $(CXXFLAGS) $(INCPATH) -o evol_model.o utils/evol_model.cpp
 
 check_version.o: utils/check_version.cpp utils/check_version.h \
+		utils/msp_patchlevel.h \
 		utils/log_output.h
 	$(CXX) -c $(CXXFLAGS) $(INCPATH) -o check_version.o utils/check_version.cpp
 

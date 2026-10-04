@@ -22,6 +22,14 @@
 #include <iostream>
 #include <fstream>
 #include "utils/settings.h"
+
+// Local build marker. Empty unless the build defines MSP_PATCHLEVEL, so a
+// stock build prints exactly what upstream prints.
+#include "utils/msp_patchlevel.h"
+#ifndef MSP_PATCHLEVEL
+#define MSP_PATCHLEVEL ""
+#endif
+
 #include "utils/check_version.h"
 #include "utils/log_output.h"
 
