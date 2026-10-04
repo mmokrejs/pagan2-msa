@@ -420,6 +420,7 @@ check_version.o: utils/check_version.cpp utils/check_version.h \
 
 exonerate_queries.o: utils/exonerate_queries.cpp utils/exonerate_queries.h \
 		utils/tool_probe.h \
+		utils/child_pipe.h \
 		utils/fasta_entry.h \
 		utils/substring_hit.h \
 		main/node.h \
