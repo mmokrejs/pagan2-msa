@@ -29,7 +29,11 @@
 // cannot flake:
 //
 //     old_seed(t, pid) = t                 -> identical for every pid
-//     new_seed(t, pid) = t ^ pid           -> distinct for distinct pids
+//     xor_seed(t, pid) = t ^ pid           -> distinct within one second, but
+//                                             (t,pid) and (t+1,pid+1) collide
+//                                             whenever t and pid are even
+//     process_seed(t, pid)                 -> utils/process_seed.h, the rule
+//                                             main() really uses
 //
 // and then shows the CONSEQUENCE the retry loop cares about: the sequence of
 // candidate file names two processes would try.
@@ -46,8 +50,10 @@
 #include <string>
 #include <vector>
 #include <unistd.h>
+#include "utils/process_seed.h"
 
 using namespace std;
+using namespace ppa;
 
 static int failures = 0;
 
@@ -64,9 +70,14 @@ static unsigned old_seed(time_t t, pid_t /*pid*/)
     return static_cast<unsigned>(t);
 }
 
-static unsigned new_seed(time_t t, pid_t pid)
+static unsigned xor_seed(time_t t, pid_t pid)
 {
     return static_cast<unsigned>(t) ^ static_cast<unsigned>(pid);
+}
+
+static unsigned new_seed(time_t t, pid_t pid)
+{
+    return process_seed(static_cast<uint64_t>(t), static_cast<uint64_t>(pid));
 }
 
 // The first `n` candidate names a process would try, exactly as
@@ -110,7 +121,7 @@ int main()
         for (int i = 0; i < n_pids; ++i)
             seeds.insert(new_seed(t, pids[i]));
         check(static_cast<int>(seeds.size()) == n_pids,
-              "srand(time(0) ^ getpid()) gives each process its OWN seed");
+              "process_seed(time, pid) gives each process its OWN seed");
     }
 
     // ---- THE CONSEQUENCE the retry loop depends on ----------------------
@@ -147,11 +158,22 @@ int main()
               "does not reuse its own names");
     }
 
-    // ---- And it really is the running pid that varies -------------------
+    // ---- Nearby (time, pid) pairs: a launcher starting one a second -----
+    // XOR collides along the diagonal (t+k, pid+k); the mixed seed must not
+    // collide anywhere in a block of 64 seconds x 256 consecutive pids.
     {
-        check(new_seed(t, getpid()) == (static_cast<unsigned>(t)
-                                        ^ static_cast<unsigned>(getpid())),
-              "the rule uses this process's real pid");
+        const pid_t p0 = 4242;
+        check(xor_seed(t, p0) == xor_seed(t + 1, p0 + 1),
+              "PREMISE: t ^ pid repeats for (t, pid) and (t+1, pid+1) when both are even");
+        set<unsigned> seeds;
+        int pairs = 0;
+        for (int dt = 0; dt < 64; ++dt)
+            for (int dp = 0; dp < 256; ++dp, ++pairs)
+                seeds.insert(new_seed(t + dt, p0 + dp));
+        ostringstream os;
+        os << "no two of " << pairs << " nearby (time, pid) pairs share a seed ("
+           << seeds.size() << " distinct)";
+        check(static_cast<int>(seeds.size()) == pairs, os.str());
     }
 
     cout << (failures ? "\nFAILURES: " : "\nAll checks passed (")

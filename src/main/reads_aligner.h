@@ -63,6 +63,9 @@ class Reads_aligner
     // every call was most of the run time: a codon model has a 1892-symbol
     // alphabet (61 sense codons, NNN and every ambiguity pair), so each build
     // allocates ~71 MB and computes ~10.7 M cells, each with a log().
+    // Assumes what holds today: one Model_factory per run reaches this
+    // Reads_aligner (the cache is keyed by its address and the distance), and
+    // read placement is single-threaded (the returned model is shared).
     std::unique_ptr<Evol_model> scoring_model;
     Model_factory *scoring_model_mf;
     double scoring_model_distance;

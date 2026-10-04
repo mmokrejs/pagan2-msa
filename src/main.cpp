@@ -22,6 +22,7 @@
 #include <vector>
 #include <ctime>
 #include <unistd.h>
+#include "utils/process_seed.h"
 #include "utils/settings.h"
 #include "utils/settings_handle.h"
 #include "utils/log_output.h"
@@ -109,15 +110,15 @@ int main(int argc, char *argv[])
     // files.  Nothing crashes; the alignment is simply of the wrong
     // sequences, or comes back empty.
     //
-    // Mixing in the pid gives every process its own sequence, which is what
-    // the existing retry loops were written to assume.  getpid() adds no new
-    // portability constraint: <unistd.h> is already used in the tree (see
-    // utils/bppancestors.cpp) and there are no Windows guards anywhere in it.
+    // process_seed() mixes the pid in (see utils/process_seed.h for why not
+    // with a plain XOR).  getpid() adds no new portability constraint:
+    // <unistd.h> is already used in the tree (see utils/bppancestors.cpp)
+    // and there are no Windows guards anywhere in it.
     //
     // This does not make a run reproducible and is not meant to -- rand() is
     // also used for stochastic backtracking in viterbi_alignment.cpp, which
     // was never reproducible under a clock-derived seed either.
-    srand(static_cast<unsigned>(time(0)) ^ static_cast<unsigned>(getpid()));
+    srand(process_seed(static_cast<uint64_t>(time(0)), static_cast<uint64_t>(getpid())));
     clock_t analysis_start_time=clock();
 
 

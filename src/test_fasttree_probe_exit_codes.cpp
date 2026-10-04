@@ -16,13 +16,22 @@
 // 2. WHETHER THE PROBE CAN HANG.  Because FastTree reads standard input, a
 //    probe that does not redirect it BLOCKS FOREVER whenever the parent's
 //    own stdin is open -- an interactive shell, a pipeline, a job launcher.
-//    The `</dev/null` in the probe command is load-bearing.  The second half
-//    of this test demonstrates both directions with a bounded `timeout` so
-//    that the failing case cannot hang the test run itself.
+//    The `</dev/null` in the probe command is load-bearing.
 //
-// Build (from src/):
-//   g++ -std=c++11 -w -I. -Iutils -Imain -o test_fasttree_probe_exit_codes \
-//       test_fasttree_probe_exit_codes.cpp
+// The second half runs the REAL FastTree_tree::test_executable() and
+// infer_phylogeny(), with --fasttree-exec naming a stand-in script in a
+// directory whose name holds a space. The stand-in records what its standard
+// input is and, when given arguments, prints a tree. This test's own stdin is
+// made a pipe that stays open, as a launcher's would be. Checked: the probe
+// finds the program by that path (it is ONE shell word), its stdin is
+// /dev/null rather than the inherited pipe, and the tree comes back.
+//
+// Build (from src/, after a normal build has produced the objects; every
+// object but main.o):
+//   g++ -std=c++11 -w -fopenmp -I. -Iutils -Imain \
+//       -o test_fasttree_probe_exit_codes test_fasttree_probe_exit_codes.cpp \
+//       $(ls *.o | grep -v '^main.o$') -lboost_program_options -lboost_regex \
+//       -lboost_thread -lboost_system -lgomp -lm -lz -lpthread -ldl
 // Run: ./test_fasttree_probe_exit_codes  (exit 0 and PASS lines, or FAIL + 1)
 #include <cstdio>
 #include <cstdlib>
@@ -30,7 +39,11 @@
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <fstream>
+#include <vector>
 #include "utils/helper_probe.h"
+#include "utils/fasttree_tree.h"
+#include "utils/settings_handle.h"
 
 using namespace ppa;
 using namespace std;
@@ -46,14 +59,6 @@ static void check(bool ok, const string &what)
         cout << "FAIL: " << what << endl;
         failures++;
     }
-}
-
-// Is `timeout` (coreutils) available? The hang half of the test needs it to
-// bound the failing case; without it we skip rather than risk hanging.
-static bool have_timeout()
-{
-    return helper_was_found(system("timeout --help >/dev/null 2>/dev/null"))
-           && WEXITSTATUS(system("timeout --help >/dev/null 2>/dev/null")) == 0;
 }
 
 int main()
@@ -99,29 +104,66 @@ int main()
     check(helper_was_found(-1) == false,
           "system() == -1 (fork/wait failed) means absent");
 
-    // ---- 2. the redirect is what stops the probe hanging ----------------
-
-    if(!have_timeout())
-        cout << "SKIP: `timeout` unavailable; not testing the stdin hang"
-             << endl;
-    else
+    // ---- 2. the real probe and run, through --fasttree-exec ------------
     {
-        // `cat` stands in for FastTree here: both read standard input when
-        // given no file. The parent side of the pipe stays open for longer
-        // than the timeout, which is what an interactive shell or a job
-        // launcher looks like to the child.
-        //
-        // Without the redirect the probe hangs and `timeout` kills it (124).
-        int hung = system("sleep 10 | timeout 2 cat >/dev/null 2>/dev/null");
-        check(WIFEXITED(hung) && WEXITSTATUS(hung) == 124,
-              "a stdin-reading helper with NO redirect hangs (timeout kills it)");
+        const char *tmp = getenv("TMPDIR");
+        string base = string(tmp && *tmp ? tmp : ".") + "/test_fasttree_probe.XXXXXX";
+        vector<char> tmpl(base.begin(), base.end());
+        tmpl.push_back('\0');
+        string root = mkdtemp(&tmpl[0]) ? string(&tmpl[0]) : string();
+        string dir = root + "/dir with space";
+        string exe = dir + "/fake FastTree";
+        string record = root + "/stdin.txt";
+        if(root.empty() || mkdir(dir.c_str(), 0700) != 0)
+        {
+            cout << "FAIL: could not create the scratch directory under " << base << endl;
+            return 1;
+        }
+        {
+            ofstream f(exe.c_str());
+            f << "#!/bin/sh\n"
+                 "if [ $# -eq 0 ]; then\n"
+                 "  readlink /proc/self/fd/0 > \"$FT_STDIN_RECORD\" 2>/dev/null"
+                 " || echo unknown > \"$FT_STDIN_RECORD\"\n"
+                 "  exit 1\n"
+                 "fi\n"
+                 "echo '(a:0.1,b:0.1);'\n";
+        }
+        chmod(exe.c_str(), 0700);
+        setenv("FT_STDIN_RECORD", record.c_str(), 1);
 
-        // With the redirect it returns immediately, whatever the parent's
-        // stdin is doing.
-        int fine = system(
-            "sleep 10 | timeout 2 cat </dev/null >/dev/null 2>/dev/null");
-        check(WIFEXITED(fine) && WEXITSTATUS(fine) == 0,
-              "the same helper with `</dev/null` returns at once");
+        // Our stdin becomes a pipe whose write end stays open.
+        int fds[2];
+        if(pipe(fds) == 0)
+        {
+            dup2(fds[0], 0);
+            close(fds[0]);
+        }
+
+        const char *fake_argv[] = {"test_fasttree_probe_exit_codes", "--fasttree-exec", exe.c_str()};
+        Settings_handle::st.read_command_line_arguments(3, const_cast<char**>(fake_argv));
+
+        FastTree_tree ft;
+        check(ft.test_executable(),
+              "--fasttree-exec naming a path with a space is found");
+
+        string seen;
+        ifstream r(record.c_str());
+        getline(r, seen);
+        check(seen == "/dev/null",
+              "the probe's stdin is /dev/null, not the inherited open pipe (got '" + seen + "')");
+
+        vector<Fasta_entry> seqs(2);
+        seqs[0].name = "a"; seqs[0].sequence = "ACGTACGTAC";
+        seqs[1].name = "b"; seqs[1].sequence = "ACGTACGTAA";
+        string tree = ft.infer_phylogeny(&seqs, false, 1);
+        check(tree.find("(a:0.1,b:0.1);") != string::npos,
+              "infer_phylogeny() runs the program by that path and reads its tree");
+
+        remove(exe.c_str());
+        remove(record.c_str());
+        rmdir(dir.c_str());
+        rmdir(root.c_str());
     }
 
     if(failures)

@@ -20,10 +20,16 @@ namespace ppa {
 //     127  command not found
 //     126  found, but could not be executed (not executable, bad interpreter)
 //
-// Anything else -- including a non-zero exit the helper chose itself, and
-// including death by signal -- means the program was there and ran. That is
-// all a presence probe needs to establish; whether it liked its arguments is
-// a different question, and not one the probe asked.
+// Anything else -- including a non-zero exit the helper chose itself --
+// means the program was there and ran. That is all a presence probe needs to
+// establish; whether it liked its arguments is a different question, and not
+// one the probe asked.
+//
+// Death by signal is counted as "ran" too, and that one is a judgement call:
+// sh execs the last command of `sh -c` in place (dash and bash both do), so
+// a signal status is normally the helper's own. It can also be the shell's,
+// killed before the helper started -- an interrupt delivered to the whole
+// process group -- in which case the run is being interrupted anyway.
 //
 // `system()` returns -1 when the fork or wait failed, in which case nothing
 // ran at all.

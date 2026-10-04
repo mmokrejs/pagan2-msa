@@ -21,8 +21,10 @@
 #include "exonerate_queries.h"
 #include "utils/tool_probe.h"
 #include "utils/child_pipe.h"
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <sstream>
 #include <map>
@@ -44,7 +46,8 @@ using namespace ppa;
 // the step blocked on the network filesystem). `extra_flags` is constant
 // flag text from this file ("-T dna -Q dna", "-m affine:local ..."); the file
 // names go in as single arguments, so no quoting is involved. `*command_text`
-// receives the same command spelled for the log line.
+// receives the same command spelled for the log line, an argument holding a
+// space or a quote shown in single quotes so it stays one word there too.
 static vector<string> exonerate_args(const string &exoneratepath,
                                      const string &tmp_dir, int r,
                                      const string &extra_flags,
@@ -63,8 +66,31 @@ static vector<string> exonerate_args(const string &exoneratepath,
     child_pipe_append_flags(&a, extra_flags);
     command_text->clear();
     for (size_t i = 0; i < a.size(); i++)
-        *command_text += (i ? " " : "") + a[i];
+    {
+        if (i)
+            *command_text += " ";
+        if (a[i].find_first_of(" \t'\"") == string::npos)
+        {
+            *command_text += a[i];
+            continue;
+        }
+        *command_text += "'";
+        for (size_t k = 0; k < a[i].size(); k++)
+            *command_text += a[i][k] == '\'' ? string("'\\''") : string(1, a[i][k]);
+        *command_text += "'";
+    }
     return a;
+}
+
+// child_pipe_open() failed: say which program and why. popen(3) could fail
+// only on fork/pipe exhaustion; spawning directly also fails for a program
+// that exists but cannot be executed, and that is fatal here as before.
+static void exonerate_start_failed(const string &program)
+{
+    int e = errno;
+    Log_output::write_out("Problems with exonerate pipe: cannot run '"+program+"': "
+                          +string(strerror(e))+".\nExiting.\n",0);
+    exit(1);
 }
 
 Exonerate_queries::Exonerate_queries()
@@ -117,6 +143,9 @@ bool Exonerate_queries::test_executable()
     if(WEXITSTATUS(status) == 1)
         return true;
 
+    // Upstream's probe, unchanged. The backticks are not a typo: a command
+    // consisting only of a substitution takes the substitution's exit
+    // status, so this does test exonerate's.
     exoneratepath = "";
     status = system("`exonerate  >/dev/null 2>/dev/null`");
 
@@ -527,10 +556,7 @@ void Exonerate_queries::preselect_targets(map<string,string> *target_sequences, 
 
     Child_pipe child;
     if ( !child_pipe_open(exonerate_argv, &child) )
-    {
-        Log_output::write_out("Problems with exonerate pipe.\nExiting.\n",0);
-        exit(1);
-    }
+        exonerate_start_failed(exonerate_argv[0]);
     FILE *fpipe = child.fp;
 
     Log_output::write_out("Exonerate_queries: command: "+command+"\n",2);
@@ -543,7 +569,8 @@ void Exonerate_queries::preselect_targets(map<string,string> *target_sequences, 
     this->read_sugar_hits(fpipe,&sugar_hits);
     child_pipe_close(&child);
 
-    for(vector<hit>::iterator hi = sugar_hits.begin(); hi != sugar_hits.end(); hi++)
+    vector<hit> folded = Exonerate_queries::fold_hits(sugar_hits);
+    for(vector<hit>::iterator hi = folded.begin(); hi != folded.end(); hi++)
         this->add_output_hit(&all_hits,*hi);
 
     if(!Settings_handle::st.is("keep-temp-files"))
@@ -585,8 +612,8 @@ void Exonerate_queries::preselect_targets(map<string,string> *target_sequences, 
 // order and std::sort is not stable -- so one batch of reads could be placed
 // differently, and aligned differently, from one run to the next. Reading all
 // hits first and putting them in this order makes the result a function of
-// the hits alone. Best score first, so the strand of a target's best single
-// hit is the one its other hits are summed into.
+// the hits alone: fold_hits() below no longer depends on the order at all,
+// and the targets it returns, best first, are ranked in this order.
 bool Exonerate_queries::canonical_order(const hit& a,const hit& b)
 {
     if(a.score != b.score)
@@ -620,48 +647,71 @@ void Exonerate_queries::read_sugar_hits(FILE *fpipe, vector<hit> *hits)
     sort(hits->begin(), hits->end(), Exonerate_queries::canonical_order);
 }
 
+// One hit per (query, target): the hits on each strand pair are summed
+// (score) and spanned (start/end), and the strand pair with the highest sum
+// is kept, ties going to the pair first in canonical_order(). Sums, minima
+// and maxima do not depend on the order the hits arrive in, so neither does
+// this. It is what the old in-print-order fold produced whenever a target's
+// hits on one strand pair were read before those on the other; read
+// interleaved, that fold could keep a single opposite-strand hit that beat a
+// partial sum (+5, -9, +6 kept -9 where +5 and +6 sum to 11).
+vector<hit> Exonerate_queries::fold_hits(const vector<hit>& hits)
+{
+    map<string,hit> by_strand;
+    for(vector<hit>::const_iterator it = hits.begin(); it != hits.end(); it++)
+    {
+        string key = it->query+'\x1f'+it->node+'\x1f'+it->q_strand+it->t_strand;
+        map<string,hit>::iterator f = by_strand.find(key);
+        if( f == by_strand.end() )
+        {
+            by_strand.insert( make_pair(key, *it) );
+            continue;
+        }
+        hit &s = f->second;
+        s.score += it->score;
+        if(s.q_start > it->q_start)
+            s.q_start = it->q_start;
+        if(s.q_end < it->q_end)
+            s.q_end = it->q_end;
+        if(s.t_start > it->t_start)
+            s.t_start = it->t_start;
+        if(s.t_end < it->t_end)
+            s.t_end = it->t_end;
+    }
+
+    map<string,hit> by_target;
+    for(map<string,hit>::iterator it = by_strand.begin(); it != by_strand.end(); it++)
+    {
+        const hit &g = it->second;
+        string key = g.query+'\x1f'+g.node;
+        map<string,hit>::iterator f = by_target.find(key);
+        if( f == by_target.end() )
+            by_target.insert( make_pair(key, g) );
+        else if( canonical_order(g, f->second) )
+            f->second = g;
+    }
+
+    vector<hit> folded;
+    for(map<string,hit>::iterator it = by_target.begin(); it != by_target.end(); it++)
+        folded.push_back(it->second);
+    sort(folded.begin(), folded.end(), Exonerate_queries::canonical_order);
+    return folded;
+}
+
+// `h` is already folded (fold_hits()): one hit per (query, target).
 void Exonerate_queries::add_output_hit(map<string,multimap<string,hit> > *all_hits, const hit& h)
 {
+    map<string,multimap<string,hit> >::iterator iter = all_hits->find(h.query);
+
+    if( iter != all_hits->end() )
     {
-
-        map<string,multimap<string,hit> >::iterator iter = all_hits->find(h.query);
-
-        if( iter != all_hits->end() )
-        {
-
-            multimap<string,hit>::iterator iter2 = iter->second.find(h.node);
-
-            if( iter2 != iter->second.end() )
-            {
-                if(iter2->second.t_strand == h.t_strand && iter2->second.q_strand == h.q_strand)
-                {
-                    iter2->second.score += h.score;
-
-                    if(iter2->second.q_start > h.q_start)
-                        iter2->second.q_start = h.q_start;
-                    if(iter2->second.q_end < h.q_end)
-                        iter2->second.q_end = h.q_end;
-                    if(iter2->second.t_start > h.t_start)
-                        iter2->second.t_start = h.t_start;
-                    if(iter2->second.t_end < h.t_end)
-                        iter2->second.t_end = h.t_end;
-                }
-                else if(iter2->second.score < h.score)
-                {
-                    iter2->second = h;
-                }
-            }
-            else
-            {
-                iter->second.insert( make_pair(h.node, h) );
-            }
-        }
-        else
-        {
-            multimap<string,hit> new_hit;
-            new_hit.insert( make_pair(h.node, h) );
-            all_hits->insert( make_pair(h.query, new_hit ) );
-        }
+        iter->second.insert( make_pair(h.node, h) );
+    }
+    else
+    {
+        multimap<string,hit> new_hit;
+        new_hit.insert( make_pair(h.node, h) );
+        all_hits->insert( make_pair(h.query, new_hit ) );
     }
 }
 
@@ -796,10 +846,7 @@ void Exonerate_queries::local_alignment(map<string,string> *target_sequences, Fa
 
     Child_pipe child;
     if ( !child_pipe_open(exonerate_argv, &child) )
-    {
-        Log_output::write_out("Problems with exonerate pipe.\nExiting.\n",0);
-        exit(1);
-    }
+        exonerate_start_failed(exonerate_argv[0]);
     FILE *fpipe = child.fp;
 
     // read exonerate output, summing the multiple hit scores
@@ -811,38 +858,12 @@ void Exonerate_queries::local_alignment(map<string,string> *target_sequences, Fa
     this->read_sugar_hits(fpipe,&sugar_hits);
     child_pipe_close(&child);
 
-    for(vector<hit>::iterator hi = sugar_hits.begin(); hi != sugar_hits.end(); hi++)
+    // One query: fold_hits() leaves one hit per target, best first.
+    vector<hit> folded = Exonerate_queries::fold_hits(sugar_hits);
+    for(vector<hit>::iterator hi = folded.begin(); hi != folded.end(); hi++)
     {
-        const hit& h = *hi;
-
-        {
-            map<string,hit>::iterator iter = all_hits.find(h.node);
-            if( iter != all_hits.end() )
-            {
-                if(iter->second.t_strand == h.t_strand && iter->second.q_strand == h.q_strand)
-                {
-                    iter->second.score += h.score;
-
-                    if(iter->second.q_start > h.q_start)
-                        iter->second.q_start = h.q_start;
-                    if(iter->second.q_end < h.q_end)
-                        iter->second.q_end = h.q_end;
-                    if(iter->second.t_start > h.t_start)
-                        iter->second.t_start = h.t_start;
-                    if(iter->second.t_end < h.t_end)
-                        iter->second.t_end = h.t_end;
-                }
-                else if(iter->second.score < h.score)
-                {
-                    iter->second = h;
-                }
-            }
-            else
-            {
-                all_hits.insert( make_pair(h.node, h) );
-                hit_names.push_back(h.node);
-            }
-        }
+        all_hits.insert( make_pair(hi->node, *hi) );
+        hit_names.push_back(hi->node);
     }
 
 
@@ -971,10 +992,7 @@ void Exonerate_queries::local_alignment(Node *root, Fasta_entry *read, multimap<
 
     Child_pipe child;
     if ( !child_pipe_open(exonerate_argv, &child) )
-    {
-        Log_output::write_out("Problems with exonerate pipe.\nExiting.\n",0);
-        exit(1);
-    }
+        exonerate_start_failed(exonerate_argv[0]);
     FILE *fpipe = child.fp;
 
     // read exonerate output, summing the multiple hit scores
@@ -986,38 +1004,12 @@ void Exonerate_queries::local_alignment(Node *root, Fasta_entry *read, multimap<
     this->read_sugar_hits(fpipe,&sugar_hits);
     child_pipe_close(&child);
 
-    for(vector<hit>::iterator hi = sugar_hits.begin(); hi != sugar_hits.end(); hi++)
+    // One query: fold_hits() leaves one hit per target, best first.
+    vector<hit> folded = Exonerate_queries::fold_hits(sugar_hits);
+    for(vector<hit>::iterator hi = folded.begin(); hi != folded.end(); hi++)
     {
-        const hit& h = *hi;
-
-        {
-            map<string,hit>::iterator iter = all_hits.find(h.node);
-            if( iter != all_hits.end() )
-            {
-                if(iter->second.t_strand == h.t_strand && iter->second.q_strand == h.q_strand)
-                {
-                    iter->second.score += h.score;
-
-                    if(iter->second.q_start > h.q_start)
-                        iter->second.q_start = h.q_start;
-                    if(iter->second.q_end < h.q_end)
-                        iter->second.q_end = h.q_end;
-                    if(iter->second.t_start > h.t_start)
-                        iter->second.t_start = h.t_start;
-                    if(iter->second.t_end < h.t_end)
-                        iter->second.t_end = h.t_end;
-                }
-                else if(iter->second.score < h.score)
-                {
-                    iter->second = h;
-                }
-            }
-            else
-            {
-                all_hits.insert( make_pair(h.node, h) );
-                hit_names.push_back(h.node);
-            }
-        }
+        all_hits.insert( make_pair(hi->node, *hi) );
+        hit_names.push_back(hi->node);
     }
 
 
@@ -1123,10 +1115,7 @@ void Exonerate_queries::local_pairwise_alignment(string *str1,string *str2,vecto
 
     Child_pipe child;
     if ( !child_pipe_open(exonerate_argv, &child) )
-    {
-        Log_output::write_out("Problems with exonerate pipe.\nExiting.\n",0);
-        exit(1);
-    }
+        exonerate_start_failed(exonerate_argv[0]);
     FILE *fpipe = child.fp;
 
     // read exonerate output, summing the multiple hit scores

@@ -72,6 +72,21 @@ static string fasttree_exec()
     return "fasttree";
 }
 
+// The FastTree program as ONE shell word, for the system()/popen() command
+// lines below. The value of --fasttree-exec may be a path, and a path may hold
+// a space or a quote; unquoted, the shell would split it and report it "not
+// found" (127). A value with a '/' is used as given; a bare name is prefixed
+// with `prefix`, the directory being tried ("" for a lookup on PATH).
+static string fasttree_command(const string &prefix)
+{
+    string exec = fasttree_exec();
+    string prog = exec.find('/') != string::npos ? exec : prefix + exec;
+    string quoted = "'";
+    for(size_t i = 0; i < prog.size(); i++)
+        quoted += prog[i] == '\'' ? string("'\\''") : string(1, prog[i]);
+    return quoted + "'";
+}
+
 FastTree_tree::FastTree_tree()
 {
 }
@@ -93,8 +108,7 @@ bool FastTree_tree::test_executable()
     if (epath.find("/")!=std::string::npos)
         epath = epath.substr(0,epath.rfind("/")+1);
     progpath = epath;
-    epath = epath+fasttree_exec()+" </dev/null >/dev/null 2>/dev/null";
-    int status = system(epath.c_str());
+    int status = system((fasttree_command(epath)+" </dev/null >/dev/null 2>/dev/null").c_str());
 
     return helper_was_found(status);
 
@@ -125,15 +139,19 @@ bool FastTree_tree::test_executable()
 
     #endif
 
-    progpath = epath;
-    epath = epath+fasttree_exec()+" </dev/null >/dev/null 2>/dev/null";
-    int status = system(epath.c_str());
+    // Beside pagan2's binary first, unless the executable was named by path.
+    int status;
+    if(fasttree_exec().find('/') == string::npos)
+    {
+        progpath = epath;
+        status = system((fasttree_command(epath)+" </dev/null >/dev/null 2>/dev/null").c_str());
 
-    if(helper_was_found(status))
-        return true;
+        if(helper_was_found(status))
+            return true;
+    }
 
     progpath = "";
-    status = system((fasttree_exec()+" </dev/null >/dev/null 2>/dev/null").c_str());
+    status = system((fasttree_command("")+" </dev/null >/dev/null 2>/dev/null").c_str());
 
     if(Settings_handle::st.is("docker"))
         return true;
@@ -180,7 +198,7 @@ string FastTree_tree::infer_phylogeny(std::vector<Fasta_entry> *sequences,bool i
     f_output.close();
 
     stringstream command;
-    command << progpath<<fasttree_exec()<<" -quiet -nopr -nosupport ";
+    command << fasttree_command(progpath)<<" -quiet -nopr -nosupport ";
     if(is_protein)
         command << f_name.str() << " 2>/dev/null";
     else

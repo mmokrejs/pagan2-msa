@@ -26,12 +26,18 @@
  * A program name without a '/' is looked up on PATH (posix_spawnp), exactly
  * as the shell did; a name with one is executed as given.
  *
+ * The pipe is created close-on-exec, as popen(3)'s is: the helpers are run
+ * from inside OpenMP-parallel alignment, and a write end inherited by a
+ * helper another thread spawns at the same moment keeps this reader from
+ * seeing EOF until that unrelated helper exits.
+ *
  * child_pipe_close() returns the child's wait status like pclose(3) does
  * (use WIFEXITED/WEXITSTATUS on it), or -1 if it could not be waited for.
  */
 
 #include <cerrno>
 #include <cstdio>
+#include <fcntl.h>
 #include <spawn.h>
 #include <string>
 #include <sys/wait.h>
@@ -67,6 +73,41 @@ inline void child_pipe_append_flags(std::vector<std::string> *argv,
     }
 }
 
+// A close-on-exec pipe whose two ends are both above stderr. If this process
+// runs with stdin or stdout closed, pipe() hands out 0 or 1, and the write
+// end landing on 1 would make the child's "dup2(w,1); close(w)" close its own
+// stdout. Where pipe2() is missing, FD_CLOEXEC is set right after pipe(),
+// which leaves a short window for a concurrent spawn.
+inline bool child_pipe_make(int fds[2])
+{
+#if defined(__linux__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+    if (pipe2(fds, O_CLOEXEC) != 0)
+        return false;
+#else
+    if (pipe(fds) != 0)
+        return false;
+    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+#endif
+    for (int i = 0; i < 2; i++)
+    {
+        if (fds[i] > 2)
+            continue;
+        int moved = fcntl(fds[i], F_DUPFD_CLOEXEC, 3);
+        if (moved < 0)
+        {
+            int e = errno;
+            close(fds[0]);
+            close(fds[1]);
+            errno = e;
+            return false;
+        }
+        close(fds[i]);
+        fds[i] = moved;
+    }
+    return true;
+}
+
 inline bool child_pipe_open(const std::vector<std::string> &argv,
                             Child_pipe *out)
 {
@@ -74,7 +115,7 @@ inline bool child_pipe_open(const std::vector<std::string> &argv,
         return false;
 
     int fds[2];
-    if (pipe(fds) != 0)
+    if (!child_pipe_make(fds))
         return false;
 
     posix_spawn_file_actions_t fa;

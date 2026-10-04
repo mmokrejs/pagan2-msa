@@ -190,7 +190,8 @@ FORCE:
 
 ####### Compile
 
-main.o: main.cpp utils/settings.h \
+main.o: main.cpp utils/process_seed.h \
+		utils/settings.h \
 		utils/settings_handle.h \
 		utils/log_output.h \
 		utils/input_output_parser.h \
@@ -421,6 +422,7 @@ check_version.o: utils/check_version.cpp utils/check_version.h \
 
 exonerate_queries.o: utils/exonerate_queries.cpp utils/exonerate_queries.h \
 		utils/tool_probe.h \
+		utils/child_pipe.h \
 		utils/fasta_entry.h \
 		utils/substring_hit.h \
 		main/node.h \

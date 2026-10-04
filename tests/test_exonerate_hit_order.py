@@ -7,10 +7,17 @@ Usage:
 exonerate does not print the hits of a run in a reproducible order: on one
 unchanged query and target file, exonerate 2.4.0 printed the same set of
 sugar lines in four different orders in twelve runs. pagan2 read them
-order-sensitively -- the hits on one target were folded keeping the first of
-two opposite-strand hits that tie, the targets were ranked in first-seen
-order and std::sort is not stable -- so the same batch of reads could be
-placed, and aligned, differently from one run to the next.
+order-sensitively -- the hits on one target were folded in print order, so
+which strand won depended on it; the targets were ranked in first-seen order
+and std::sort is not stable -- so the same batch of reads could be placed,
+and aligned, differently from one run to the next.
+
+On the data below, v1.6 writes the same rows in a different ORDER for the
+two hit orders, which is what this test catches. The order can also move
+bases: with two queries carrying 30 nt insertions at the same site, v1.6
+put one query's bases before or after the other's insertion columns
+depending on the hit order. src/test_exonerate_fold_hits.cpp pins the fold
+itself.
 
 THE DATA (deterministic, standard library only, written under TMPDIR)
   Four codon sequences (ATG + 149 sense codons) on a four-taxon tree, where
