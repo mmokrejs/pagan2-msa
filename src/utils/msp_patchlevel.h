@@ -58,5 +58,14 @@
 "                      read, against 1.30 s per one-read process and 1.16 /\n" \
 "                      2.35 s per read in a 40 / 145-read batch. Branch\n" \
 "                      feature/independent-queries; NOT submitted upstream.\n" \
+"    +sites-index      correct_sites_index() summed a parent's index shift\n" \
+"                      only at the child sites the parent points at, missing\n" \
+"                      new columns beside a node's own insertions -- so a\n" \
+"                      query placed onto a node made for an earlier query\n" \
+"                      shifted that clade and cut its 3' end off, reference\n" \
+"                      rows included. 19+37-read batches: 41 of 55 rows short\n" \
+"                      by 125-459 nt -> 55 of 55 whole; single-query runs\n" \
+"                      unchanged. Branch fix/correct-sites-index-shift; NOT\n" \
+"                      submitted upstream.\n" \
 "  NOT an upstream release; see docs/issues/pagan2_quirks.md\n"
 #endif
