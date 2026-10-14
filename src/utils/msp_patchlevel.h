@@ -67,5 +67,12 @@
 "                      by 125-459 nt -> 55 of 55 whole; single-query runs\n" \
 "                      unchanged. Branch fix/correct-sites-index-shift; NOT\n" \
 "                      submitted upstream.\n" \
+"    +pdeathsig        an --independent-queries query process dies with the\n" \
+"                      parent pagan2 (Linux: PR_SET_PDEATHSIG, and an exit if\n" \
+"                      the parent is already gone): a killed parent no longer\n" \
+"                      leaves its query computing into a removed directory.\n" \
+"                      Helpers (Exonerate) end with their own run, or with\n" \
+"                      the caller's process group if the group is killed.\n" \
+"                      Branch feature/independent-queries; NOT submitted.\n" \
 "  NOT an upstream release; see docs/issues/pagan2_quirks.md\n"
 #endif
