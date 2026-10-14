@@ -12,20 +12,25 @@ child that outlives its parent goes on computing at full speed for nobody,
 into a directory that is being deleted.
 
 THE DATA (deterministic, standard library only, written under TMPDIR)
-  Eight codon sequences (ATG + 999 sense codons) on a balanced eight-taxon
-  tree and four queries, run with --no-anchors and --no-preselection so that
-  each query takes seconds: every node of the tree is aligned against the
-  query by full dynamic programming. The run uses a --temp-folder whose path
-  is unique to this test; a forked child keeps its parent's command line, so
-  every pagan2 process of the run is found by that path in /proc/*/cmdline.
+  Eight codon sequences (ATG + 999 sense codons) on a balanced tree and four
+  alike queries, run with --no-anchors and --no-preselection so that a query
+  takes about a second: every node of the tree is aligned against it by full
+  dynamic programming (peak memory ~370 MB). The run uses a --temp-folder
+  whose path is unique to this test; a forked child keeps its parent's
+  command line, so every pagan2 process of the run is found by that path in
+  /proc/*/cmdline.
 
 WHAT IS CHECKED
   The parent is started, the first query's child is timed from its start to
-  its manifest row, and as soon as the second query's child exists the
-  PARENT pid alone is killed with SIGKILL. Within 0.5 s no process of the
-  run may be left (a zombie counts as gone).
-  PREMISE: the first query took at least 1.5 s, so a child that ignores its
-  parent's death would still be running when it is looked for.
+  its manifest row (T), and as soon as the second query's child exists the
+  PARENT pid alone is killed with SIGKILL. Within W = min(T/3, 0.5 s) no
+  process of the run may be left (a zombie counts as gone). The second query
+  is like the first, so a child that ignored its parent's death would still
+  have about 2/3 of T to run when W is over; one killed with its parent is
+  gone in milliseconds. W follows the host's measured speed, so the verdict
+  does not depend on it.
+  PREMISE: W >= 0.2 s (T >= 0.6 s); on a host so fast that a query is over
+  sooner, nothing would be told apart, and the test fails saying so.
 
 Linux only (it reads /proc); elsewhere it prints SKIP and exits 0.
 Exit 0 and a PASS line, or exit 1 naming what failed.
@@ -45,8 +50,11 @@ SENSE = [a + b + c for a in "ACGT" for b in "ACGT" for c in "ACGT"
 N_CODONS = 1000
 N_TAXA = 8
 N_QUERIES = 4
-MIN_QUERY_SECONDS = 1.5
-GONE_WITHIN_SECONDS = 0.5
+# The window in which the killed parent's child must be gone: a third of
+# the measured first query, at most MAX_WINDOW, at least MIN_WINDOW.
+WINDOW_FRACTION = 1.0 / 3.0
+MAX_WINDOW_SECONDS = 0.5
+MIN_WINDOW_SECONDS = 0.2
 STARTUP_LIMIT_SECONDS = 300.0
 
 
@@ -183,21 +191,24 @@ def main(argv):
             failures.append("never saw the second query's process start (exit "
                             "status %r; see %s/log)" % (parent.poll(), workdir))
         else:
+            window = min(query_seconds * WINDOW_FRACTION, MAX_WINDOW_SECONDS)
             os.kill(parent.pid, signal.SIGKILL)
             parent.wait()
             killed_at = time.monotonic()
             left = _processes_of_run(marker)
-            while left and time.monotonic() - killed_at < GONE_WITHIN_SECONDS:
-                time.sleep(0.02)
+            while left and time.monotonic() - killed_at < window:
+                time.sleep(0.01)
                 left = _processes_of_run(marker)
-            if left:
+            if window < MIN_WINDOW_SECONDS:
+                failures.append("PREMISE: a query took only %.2f s, so the window "
+                                "(%.2f s) is too short to tell a child killed with "
+                                "its parent from one that finished its query; "
+                                "nothing was tested" % (query_seconds, window))
+            elif left:
                 failures.append("%d pagan2 process(es) of the run still running "
-                                "%.1f s after the parent was killed: %s"
-                                % (len(left), GONE_WITHIN_SECONDS, left))
-            if query_seconds < MIN_QUERY_SECONDS:
-                failures.append("PREMISE: a query took only %.2f s, so a child "
-                                "that outlives its parent may have finished "
-                                "anyway; nothing was tested" % query_seconds)
+                                "%.2f s after the parent was killed (a query takes "
+                                "%.2f s here): %s"
+                                % (len(left), window, query_seconds, left))
     finally:
         if parent.poll() is None:
             parent.kill()
@@ -215,9 +226,9 @@ def main(argv):
             print("FAIL: %s" % f)
         print("(data and log kept in %s)" % workdir)
         return 1
-    print("PASS: the parent killed while query 2 ran (query 1 took %.1f s); "
-          "no process of the run left within %.1f s"
-          % (query_seconds, GONE_WITHIN_SECONDS))
+    print("PASS: the parent killed while query 2 ran (query 1 took %.2f s); "
+          "no process of the run left within %.2f s"
+          % (query_seconds, min(query_seconds * WINDOW_FRACTION, MAX_WINDOW_SECONDS)))
     shutil.rmtree(workdir, ignore_errors=True)
     return 0
 
