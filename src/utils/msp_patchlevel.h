@@ -3,9 +3,10 @@
 // Local build marker for the mutation_scatter_plot pipeline.
 // NOT upstream. Kept on the local/integration branch only, never on the
 // branches that back the pull requests. Every entry below is one such branch,
-// merged here, and names its pull request against ariloytynoja/pagan2-msa.
+// merged here, and names its pull request against ariloytynoja/pagan2-msa,
+// or says that it has none.
 #define MSP_PATCHLEVEL \
-"  local build: mutation_scatter_plot patch set 2026-10-04, on upstream v1.6\n" \
+"  local build: mutation_scatter_plot patch set 2026-10-14, on upstream v1.6\n" \
 "    +tunnel-anchors   check_hits_order_conflict() could keep two CROSSING\n" \
 "                      exonerate hits (after erasing the earlier hit of a pair\n" \
 "                      it never re-compared the survivor with its predecessor),\n" \
@@ -46,5 +47,16 @@
 "                      they are sorted into one, and each target's hits are\n" \
 "                      folded per strand pair (highest sum wins), so no print\n" \
 "                      order picks the placement. PR #22, open.\n" \
+"    +indep-queries    --independent-queries: the reference is set up once,\n" \
+"                      then each query is placed and aligned ALONE in a child\n" \
+"                      forked from that state, to <outfile>.<n>.fas, and\n" \
+"                      <outfile>.queries.tsv lists every outcome; a crashed\n" \
+"                      child loses its query only. A query's result no longer\n" \
+"                      depends on the file it is in: 291 reads in 40- and\n" \
+"                      150-read files, run twice, 1116 of 1116 placements\n" \
+"                      byte-identical to the read run alone. 0.73-0.78 s per\n" \
+"                      read, against 1.30 s per one-read process and 1.16 /\n" \
+"                      2.35 s per read in a 40 / 145-read batch. Branch\n" \
+"                      feature/independent-queries; NOT submitted upstream.\n" \
 "  NOT an upstream release; see docs/issues/pagan2_quirks.md\n"
 #endif
