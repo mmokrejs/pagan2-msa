@@ -119,8 +119,9 @@ void align_one_query_alone(Node *root, Model_factory *mf, int count,
                            vector<Fasta_entry> *queries, int i,
                            const string &query_outfile, int status_fd)
 {
-    // As main() seeds a process.
-    srand(time(0));
+    // As main() seeds a process: from the clock and THIS process's pid, so
+    // a child's temp-file names are not its siblings' (see process_seed.h).
+    srand(process_seed(static_cast<uint64_t>(time(0)), static_cast<uint64_t>(getpid())));
 
     Settings_handle::st.set_string("outfile", query_outfile);
 
