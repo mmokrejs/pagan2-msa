@@ -21,6 +21,18 @@
 #include <string>
 #include <vector>
 #include <ctime>
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <fcntl.h>
+#include <signal.h>
+#include <unistd.h>
+#include <sys/resource.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include "utils/settings.h"
 #include "utils/settings_handle.h"
 #include "utils/log_output.h"
@@ -38,6 +50,282 @@
 using namespace std;
 
 using namespace ppa;
+
+
+/*****************************************************************************/
+/*  --independent-queries                                                    */
+/*****************************************************************************/
+//
+// By default the queries of --queryfile are placed one after another into
+// ONE growing tree and alignment, so where a query goes and how it is aligned
+// depends on the queries before it in the same file. Placing a query
+//
+//   - inserts a new internal node "#n#" (the target node and the query)
+//     into the tree, and re-points the parent's alignment sites to it
+//     (Reads_aligner::correct_sites_index()), so the next query is aligned
+//     against a grown alignment;
+//   - re-reconstructs the parent's ancestral sequence
+//     (reconstruct_one_parsimony_ancestor()), which later queries are
+//     scored and aligned against;
+//   - with target preselection, adds the query and the new node to the
+//     candidate targets of every later query (target_sequences);
+//   - consumes an internal node number, so later nodes are named differently.
+//
+// With --independent-queries the reference alignment, the tree and the model
+// are set up ONCE, and each query is then placed and aligned in a child
+// process forked from that state: the child aligns that query alone, exactly
+// as a run given only that query would, and writes what such a run writes,
+// under the output name "<outfile>.<n>" (n = the query's 1-based position
+// among the queries read from --queryfile; a repeated name is renamed
+// "<name>.1", ... as in a default run). The fork's copy of the process is
+// what gives every query the pristine reference: nothing a child changes
+// reaches the parent or the next child. The parent lists every query's
+// outcome in "<outfile>.queries.tsv":
+//
+//   query  name  status  detail  alignment
+//
+// with status "placed" (the alignment file is named), "unplaced" (the query
+// matched no node or failed the overlap/identity thresholds; no file, as a
+// single-query run writes none) or "failed" (the child exited non-zero or was
+// killed; detail says how). A failed query loses that query only: the rest
+// are still aligned, and the run exits 1 at the end.
+//
+// The parent must be single-threaded when it forks, and is: with a reference
+// alignment nothing before query placement starts a thread.
+
+namespace {
+
+// Everything buffered is written now, or a child would write it again.
+void flush_all_output()
+{
+    Log_output::flush();
+    cout.flush();
+    cerr.flush();
+    fflush(NULL);
+}
+
+bool set_close_on_exec(int fd)
+{
+    int flags = fcntl(fd, F_GETFD);
+    return flags != -1 && fcntl(fd, F_SETFD, flags | FD_CLOEXEC) != -1;
+}
+
+// The child's whole life: align queries->at(i) alone, write its output under
+// query_outfile, tell the parent "placed" or "unplaced" through status_fd.
+void align_one_query_alone(Node *root, Model_factory *mf, int count,
+                           Input_output_parser *iop, Fasta_reader *fr,
+                           vector<Fasta_entry> *sequences,
+                           vector<Fasta_entry> *queries, int i,
+                           const string &query_outfile, int status_fd)
+{
+    // As main() seeds a process.
+    srand(time(0));
+
+    Settings_handle::st.set_string("outfile", query_outfile);
+
+    vector<Fasta_entry> query(1, queries->at(i));
+
+    Reads_aligner ra;
+    ra.align(root,mf,count,&query);
+    Node *query_root = ra.get_global_root();
+
+    bool placed = query_root->get_number_of_query_leaves() > 0;
+    iop->output_aligned_sequences(fr,sequences,query_root);
+
+    flush_all_output();
+
+    string status = placed ? "placed" : "unplaced";
+    const char *p = status.c_str();
+    size_t left = status.size();
+    while(left > 0)
+    {
+        ssize_t n = write(status_fd, p, left);
+        if(n < 0 && errno == EINTR)
+            continue;
+        if(n <= 0)
+            _exit(1);
+        p += n;
+        left -= n;
+    }
+    _exit(0);
+}
+
+// Runs one query in a child; returns "placed", "unplaced" or "failed", with
+// *detail saying why for "failed".
+string run_query_in_child(Node *root, Model_factory *mf, int count,
+                          Input_output_parser *iop, Fasta_reader *fr,
+                          vector<Fasta_entry> *sequences,
+                          vector<Fasta_entry> *queries, int i,
+                          const string &query_outfile, string *detail)
+{
+    int fds[2];
+    if(pipe(fds) != 0)
+    {
+        *detail = string("pipe: ")+strerror(errno);
+        return "failed";
+    }
+    // Not inherited by the helpers (Exonerate, MAFFT, ...) the child starts,
+    // so the parent sees end-of-file when the child itself is gone.
+    if(!set_close_on_exec(fds[0]) || !set_close_on_exec(fds[1]))
+    {
+        *detail = string("fcntl: ")+strerror(errno);
+        close(fds[0]);
+        close(fds[1]);
+        return "failed";
+    }
+
+    flush_all_output();
+
+    pid_t pid = fork();
+    if(pid < 0)
+    {
+        *detail = string("fork: ")+strerror(errno);
+        close(fds[0]);
+        close(fds[1]);
+        return "failed";
+    }
+    if(pid == 0)
+    {
+        close(fds[0]);
+        align_one_query_alone(root,mf,count,iop,fr,sequences,queries,i,query_outfile,fds[1]);
+        _exit(1);  // not reached
+    }
+
+    close(fds[1]);
+
+    string message;
+    char buf[64];
+    while(true)
+    {
+        ssize_t n = read(fds[0], buf, sizeof(buf));
+        if(n < 0 && errno == EINTR)
+            continue;
+        if(n <= 0)
+            break;
+        message.append(buf, n);
+    }
+    close(fds[0]);
+
+    int wstatus = 0;
+    while(waitpid(pid, &wstatus, 0) < 0)
+    {
+        if(errno != EINTR)
+        {
+            *detail = string("waitpid: ")+strerror(errno);
+            return "failed";
+        }
+    }
+
+    stringstream ds;
+    if(WIFSIGNALED(wstatus))
+    {
+        ds << "killed by signal " << WTERMSIG(wstatus) << " (" << strsignal(WTERMSIG(wstatus)) << ")";
+        *detail = ds.str();
+        return "failed";
+    }
+    if(!WIFEXITED(wstatus) || WEXITSTATUS(wstatus) != 0)
+    {
+        ds << "exit status " << WEXITSTATUS(wstatus);
+        *detail = ds.str();
+        return "failed";
+    }
+    if(message != "placed" && message != "unplaced")
+    {
+        *detail = "exited 0 without reporting an outcome";
+        return "failed";
+    }
+    return message;
+}
+
+// The parent: one child per query, in file order; the outcomes go to
+// "<outfile>.queries.tsv". Returns main()'s exit status.
+int align_queries_independently(Node *root, Model_factory *mf, int count,
+                                Input_output_parser *iop, Fasta_reader *fr,
+                                vector<Fasta_entry> *sequences)
+{
+    string outfile = "outfile";
+    if(Settings_handle::st.is("outfile"))
+        outfile = Settings_handle::st.get("outfile").as<string>();
+
+    string format = "fasta";
+    if(Settings_handle::st.is("outformat"))
+        format = Settings_handle::st.get("outformat").as<string>();
+
+    vector<Fasta_entry> queries;
+    Reads_aligner::read_queries(&queries);
+
+    string manifest_file = outfile+".queries.tsv";
+    ofstream manifest(manifest_file.c_str());
+    if(!manifest)
+    {
+        Log_output::write_out("Error: cannot write '"+manifest_file+"'.\nExiting.\n\n",0);
+        exit(1);
+    }
+    manifest << "query\tname\tstatus\tdetail\talignment\n";
+    manifest.flush();
+
+    int n_placed = 0, n_unplaced = 0, n_failed = 0;
+
+    for(int i=0; i<(int)queries.size(); i++)
+    {
+        int query_1based = i+1;
+
+        stringstream qs;
+        qs << outfile << "." << query_1based;
+        string query_outfile = qs.str();
+
+        string detail;
+        string status = run_query_in_child(root,mf,count,iop,fr,sequences,&queries,i,query_outfile,&detail);
+
+        string alignment_file = "";
+        if(status == "placed")
+        {
+            alignment_file = query_outfile+fr->get_format_suffix(format);
+            n_placed++;
+        }
+        else if(status == "unplaced")
+            n_unplaced++;
+        else
+            n_failed++;
+
+        manifest << query_1based << "\t" << queries.at(i).name << "\t" << status << "\t"
+                 << detail << "\t" << alignment_file << "\n";
+        manifest.flush();
+
+        stringstream msg;
+        msg << "\nQuery " << query_1based << "/" << queries.size() << " '" << queries.at(i).name << "': " << status;
+        if(detail != "")
+            msg << ", " << detail;
+        if(alignment_file != "")
+            msg << ", " << alignment_file;
+        msg << "\n";
+        Log_output::write_out(msg.str(),0);
+    }
+
+    manifest.close();
+    if(!manifest)
+    {
+        Log_output::write_out("Error: writing '"+manifest_file+"' failed.\nExiting.\n\n",0);
+        exit(1);
+    }
+
+    struct rusage children;
+    double children_cpu = 0;
+    if(getrusage(RUSAGE_CHILDREN, &children) == 0)
+        children_cpu = children.ru_utime.tv_sec + children.ru_utime.tv_usec/1e6
+                     + children.ru_stime.tv_sec + children.ru_stime.tv_usec/1e6;
+
+    stringstream ss;
+    ss << "\nIndependent queries: " << queries.size() << " aligned one at a time; "
+       << n_placed << " placed, " << n_unplaced << " unplaced, " << n_failed << " failed; "
+       << "the query processes used " << children_cpu << " cpu sec.\n"
+       << "Outcome per query: " << manifest_file << "\n";
+    Log_output::write_out(ss.str(),0);
+
+    return n_failed > 0 ? 1 : 0;
+}
+
+}
 
 int main(int argc, char *argv[])
 {
@@ -200,10 +488,23 @@ int main(int argc, char *argv[])
 
 
     /***********************************************************************/
+    /*  Or align each query alone against it: writes the output per query  */
+    /***********************************************************************/
+
+    int exit_code = 0;
+    bool independent_queries = Settings_handle::st.is("independent-queries");
+
+    if( independent_queries )
+    {
+        exit_code = align_queries_independently(root,&mf,count,&iop,&fr,&sequences);
+    }
+
+
+    /***********************************************************************/
     /*  If query sequences, add them to the alignment.                     */
     /***********************************************************************/
 
-    if( Settings_handle::st.is("queryfile") )
+    if( Settings_handle::st.is("queryfile") && !independent_queries )
     {
 
         Reads_aligner ra;
@@ -224,7 +525,8 @@ int main(int argc, char *argv[])
     /*  Collect the results and output them                                */
     /***********************************************************************/
 
-    iop.output_aligned_sequences(&fr,&sequences,root);
+    if( !independent_queries )
+        iop.output_aligned_sequences(&fr,&sequences,root);
 
 
     /***********************************************************************/
@@ -266,5 +568,5 @@ int main(int argc, char *argv[])
 
     delete root;
 
-    return 0;
+    return exit_code;
 }
