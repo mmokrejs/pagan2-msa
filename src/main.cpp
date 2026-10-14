@@ -33,6 +33,9 @@
 #include <sys/resource.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 #include "utils/settings.h"
 #include "utils/settings_handle.h"
 #include "utils/log_output.h"
@@ -176,6 +179,7 @@ string run_query_in_child(Node *root, Model_factory *mf, int count,
 
     flush_all_output();
 
+    pid_t parent_pid = getpid();
     pid_t pid = fork();
     if(pid < 0)
     {
@@ -186,6 +190,26 @@ string run_query_in_child(Node *root, Model_factory *mf, int count,
     }
     if(pid == 0)
     {
+#ifdef __linux__
+        // DIE WITH THE PARENT. A caller giving up on a run usually kills only
+        // the pid it started (a timeout, a batch system, an operator) and
+        // then removes the run's output and --temp-folder; a child left
+        // running would compute its query for nobody, into a directory being
+        // deleted. The kernel sends SIGKILL when the parent dies -- unless it
+        // already has, between fork() and prctl(), which getppid() catches.
+        // (A program the child starts, Exonerate or MAFFT, is not covered:
+        // the death signal is not inherited across fork or posix_spawn. It
+        // ends at its next write into the pipe its dead reader held, or with
+        // the process group of the caller, if the caller kills the group --
+        // which is why the child stays in the parent's process group.)
+        prctl(PR_SET_PDEATHSIG, SIGKILL);
+        if(getppid() != parent_pid)
+            _exit(1);
+#endif
+        // Other systems have no parent-death signal here (FreeBSD has
+        // procctl(PROC_PDEATHSIG_CTL); macOS nothing comparable): a child
+        // whose parent is killed runs until its query is aligned and
+        // written, then dies of SIGPIPE reporting the outcome to the parent.
         close(fds[0]);
         align_one_query_alone(root,mf,count,iop,fr,sequences,queries,i,query_outfile,fds[1]);
         _exit(1);  // not reached
