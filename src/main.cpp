@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <iostream>
 #include <sstream>
 #include <fcntl.h>
@@ -33,6 +34,8 @@
 #include <sys/resource.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
+#include <dirent.h>
 #ifdef __linux__
 #include <sys/prctl.h>
 #endif
@@ -79,23 +82,54 @@ using namespace ppa;
 // are set up ONCE, and each query is then placed and aligned in a child
 // process forked from that state: the child aligns that query alone, exactly
 // as a run given only that query would, and writes what such a run writes,
-// under the output name "<outfile>.<n>" (n = the query's 1-based position
-// among the queries read from --queryfile; a repeated name is renamed
-// "<name>.1", ... as in a default run). The fork's copy of the process is
-// what gives every query the pristine reference: nothing a child changes
-// reaches the parent or the next child. The parent lists every query's
-// outcome in "<outfile>.queries.tsv":
+// under the output name "<outfile>.<n>" (n = the query's 1-based number among
+// the records READ from --queryfile: a record without a sequence is dropped by
+// the reader and gets no number, which is warned about once; a repeated name
+// is renamed "<name>.1", ... as in a default run). The fork's copy of the
+// process is what gives every query the pristine reference: nothing a child
+// changes reaches the parent or the next child.
+//
+// THE MANIFEST, "<outfile>.queries.tsv": a header line, one row per query in
+// file order, and -- only once every query has a row -- a trailer line:
 //
 //   query  name  status  detail  alignment
+//   ...
+//   # complete: N queries, P placed, U unplaced, F failed
 //
-// with status "placed" (the alignment file is named), "unplaced" (the query
-// matched no node or failed the overlap/identity thresholds; no file, as a
-// single-query run writes none) or "failed" (the child exited non-zero or was
-// killed; detail says how). A failed query loses that query only: the rest
-// are still aligned, and the run exits 1 at the end.
+// The trailer has no tab, so a reader of five tab-separated columns skips it;
+// a manifest without it was cut short (the parent was killed). In the name
+// and detail columns a tab, CR or LF is written as a space (the reader splits
+// a FASTA header on spaces only, so a name can hold a tab). status is
+//
+//   placed    the child placed the query and the alignment file named in the
+//             last column exists and is not empty;
+//   unplaced  the query matched no node or failed the overlap/identity
+//             thresholds; no file, as a single-query run writes none;
+//   failed    the child exited non-zero, was killed, or said "placed" without
+//             leaving a non-empty alignment file; or the query was not run
+//             (see below). detail says which.
+//
+// The child's outputs are the regular files "<outfile>.<n>.*" and
+// "<outfile>.<n>_*". Before a query runs, such files left by an earlier run
+// are removed (so a file cannot pass for this run's); after a failed query,
+// what the child left is removed, and anything that cannot be is named in
+// detail. A failed query loses that query only: the rest are still aligned,
+// and the run exits 1. Read the manifest rather than listing the directory:
+// files of an earlier, longer run under the same -o (n beyond this run's
+// last query) are not touched.
+//
+// If pipe() or fork() fails (no memory, no processes left), nothing later
+// would succeed either: that query and every later one are "failed" without
+// another attempt, and the run exits 1.
 //
 // The parent must be single-threaded when it forks, and is: with a reference
 // alignment nothing before query placement starts a thread.
+//
+// rand() names the scratch files of the programs a query runs (Exonerate's
+// q<r>.fas, t<r>.fas). A child keeps the state main() seeded for the process:
+// the children of one run, which run one after another, draw the same names
+// and each removes its files before the next starts, while runs started
+// apart draw different ones -- exactly as separate processes would.
 
 namespace {
 
@@ -114,16 +148,115 @@ bool set_close_on_exec(int fd)
     return flags != -1 && fcntl(fd, F_SETFD, flags | FD_CLOEXEC) != -1;
 }
 
+// A manifest field: a tab, CR or LF would add a column or a row.
+string manifest_field(const string &s)
+{
+    string out = s;
+    for(size_t k=0; k<out.size(); k++)
+    {
+        if(out[k] == '\t' || out[k] == '\r' || out[k] == '\n')
+            out[k] = ' ';
+    }
+    return out;
+}
+
+// The directory and file name of an output path, and the way back to a path.
+void split_output_path(const string &path, string *dir, string *base, string *prefix)
+{
+    size_t slash = path.rfind('/');
+    if(slash == string::npos)
+    {
+        *dir = ".";
+        *base = path;
+        *prefix = "";
+    }
+    else
+    {
+        *dir = slash == 0 ? "/" : path.substr(0, slash);
+        *base = path.substr(slash+1);
+        *prefix = path.substr(0, slash+1);
+    }
+}
+
+// Removes the given paths if they are regular files; returns those it could
+// not remove, and anything else (a directory, a link, a device: not written
+// by pagan2, so not removed), with the reason.
+vector<string> remove_regular_files(const vector<string> &paths)
+{
+    vector<string> left;
+    for(size_t k=0; k<paths.size(); k++)
+    {
+        struct stat st;
+        if(lstat(paths[k].c_str(), &st) != 0)
+            continue;
+        if(!S_ISREG(st.st_mode))
+            left.push_back(paths[k]+" (not a regular file)");
+        else if(unlink(paths[k].c_str()) != 0)
+            left.push_back(paths[k]+" ("+strerror(errno)+")");
+    }
+    return left;
+}
+
+// The paths "<outfile>.<n>.*" and "<outfile>.<n>_*" in the output directory,
+// by n (no leading zero, as pagan2 writes it); n_only > 0 lists that n alone.
+map<int, vector<string> > query_output_paths(const string &outfile, int n_only)
+{
+    map<int, vector<string> > found;
+    string dir, base, prefix;
+    split_output_path(outfile, &dir, &base, &prefix);
+    base += ".";
+
+    DIR *d = opendir(dir.c_str());
+    if(d == 0)
+        return found;
+    struct dirent *e;
+    while((e = readdir(d)) != 0)
+    {
+        string name = e->d_name;
+        if(name.size() <= base.size() || name.compare(0, base.size(), base) != 0)
+            continue;
+        size_t k = base.size();
+        if(name[k] < '1' || name[k] > '9')
+            continue;
+        int n = 0;
+        while(k < name.size() && name[k] >= '0' && name[k] <= '9' && n < 100000000)
+            n = n*10 + (name[k++]-'0');
+        if(k >= name.size() || (name[k] != '.' && name[k] != '_'))
+            continue;
+        if(n_only > 0 && n != n_only)
+            continue;
+        found[n].push_back(prefix+name);
+    }
+    closedir(d);
+    return found;
+}
+
+// A regular file, not empty (a link to one counts).
+bool is_nonempty_file(const string &path)
+{
+    struct stat st;
+    return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0;
+}
+
 // The child's whole life: align queries->at(i) alone, write its output under
-// query_outfile, tell the parent "placed" or "unplaced" through status_fd.
+// query_outfile, tell the parent "placed" or "unplaced" through status_fd --
+// and, on a second line, that it could not arrange to die with the parent.
+//
+// It ends with _exit(), which skips the atexit handlers and static
+// destructors the parent's copy of the process would otherwise run a second
+// time. The paths that leave by exit() -- a fatal error inside placement or
+// output -- do run them: none removes a file today, and none may.
 void align_one_query_alone(Node *root, Model_factory *mf, int count,
                            Input_output_parser *iop, Fasta_reader *fr,
                            vector<Fasta_entry> *sequences,
                            vector<Fasta_entry> *queries, int i,
-                           const string &query_outfile, int status_fd)
+                           const string &query_outfile, int status_fd,
+                           const string &pdeathsig_error)
 {
-    // As main() seeds a process: from the clock and THIS process's pid, so
-    // a child's temp-file names are not its siblings' (see process_seed.h).
+    // LOCAL BUILD ONLY (not in the PR): reseed as main() seeds a process on
+    // this branch -- from the clock and THIS process's pid (process_seed(),
+    // PR #17) -- so every child draws its own scratch names, not only every
+    // run. The PR's child keeps the process's seed (see the comment above).
     srand(process_seed(static_cast<uint64_t>(time(0)), static_cast<uint64_t>(getpid())));
 
     Settings_handle::st.set_string("outfile", query_outfile);
@@ -140,6 +273,8 @@ void align_one_query_alone(Node *root, Model_factory *mf, int count,
     flush_all_output();
 
     string status = placed ? "placed" : "unplaced";
+    if(pdeathsig_error != "")
+        status += "\nno-pdeathsig: "+pdeathsig_error;
     const char *p = status.c_str();
     size_t left = status.size();
     while(left > 0)
@@ -156,17 +291,21 @@ void align_one_query_alone(Node *root, Model_factory *mf, int count,
 }
 
 // Runs one query in a child; returns "placed", "unplaced" or "failed", with
-// *detail saying why for "failed".
+// *detail saying why for "failed". *cannot_fork is set when pipe() or fork()
+// failed, which no later query would escape either. *pdeathsig_error is the
+// child's report that it could not ask to die with the parent.
 string run_query_in_child(Node *root, Model_factory *mf, int count,
                           Input_output_parser *iop, Fasta_reader *fr,
                           vector<Fasta_entry> *sequences,
                           vector<Fasta_entry> *queries, int i,
-                          const string &query_outfile, string *detail)
+                          const string &query_outfile, string *detail,
+                          bool *cannot_fork, string *pdeathsig_error)
 {
     int fds[2];
     if(pipe(fds) != 0)
     {
         *detail = string("pipe: ")+strerror(errno);
+        *cannot_fork = true;
         return "failed";
     }
     // Not inherited by the helpers (Exonerate, MAFFT, ...) the child starts,
@@ -176,6 +315,7 @@ string run_query_in_child(Node *root, Model_factory *mf, int count,
         *detail = string("fcntl: ")+strerror(errno);
         close(fds[0]);
         close(fds[1]);
+        *cannot_fork = true;
         return "failed";
     }
 
@@ -188,10 +328,12 @@ string run_query_in_child(Node *root, Model_factory *mf, int count,
         *detail = string("fork: ")+strerror(errno);
         close(fds[0]);
         close(fds[1]);
+        *cannot_fork = true;
         return "failed";
     }
     if(pid == 0)
     {
+        string no_pdeathsig = "";
 #ifdef __linux__
         // DIE WITH THE PARENT. A caller giving up on a run usually kills only
         // the pid it started (a timeout, a batch system, an operator) and
@@ -204,23 +346,24 @@ string run_query_in_child(Node *root, Model_factory *mf, int count,
         // ends at its next write into the pipe its dead reader held, or with
         // the process group of the caller, if the caller kills the group --
         // which is why the child stays in the parent's process group.)
-        prctl(PR_SET_PDEATHSIG, SIGKILL);
+        if(prctl(PR_SET_PDEATHSIG, SIGKILL) != 0)
+            no_pdeathsig = strerror(errno);
         if(getppid() != parent_pid)
-            _exit(1);
+            _exit(1);   // _exit(): see align_one_query_alone()
 #endif
         // Other systems have no parent-death signal here (FreeBSD has
         // procctl(PROC_PDEATHSIG_CTL); macOS nothing comparable): a child
         // whose parent is killed runs until its query is aligned and
         // written, then dies of SIGPIPE reporting the outcome to the parent.
         close(fds[0]);
-        align_one_query_alone(root,mf,count,iop,fr,sequences,queries,i,query_outfile,fds[1]);
+        align_one_query_alone(root,mf,count,iop,fr,sequences,queries,i,query_outfile,fds[1],no_pdeathsig);
         _exit(1);  // not reached
     }
 
     close(fds[1]);
 
     string message;
-    char buf[64];
+    char buf[256];
     while(true)
     {
         ssize_t n = read(fds[0], buf, sizeof(buf));
@@ -231,6 +374,15 @@ string run_query_in_child(Node *root, Model_factory *mf, int count,
         message.append(buf, n);
     }
     close(fds[0]);
+
+    size_t eol = message.find('\n');
+    if(eol != string::npos)
+    {
+        string note = message.substr(eol+1);
+        message = message.substr(0, eol);
+        if(note.compare(0, 14, "no-pdeathsig: ") == 0)
+            *pdeathsig_error = note.substr(14);
+    }
 
     int wstatus = 0;
     while(waitpid(pid, &wstatus, 0) < 0)
@@ -263,6 +415,39 @@ string run_query_in_child(Node *root, Model_factory *mf, int count,
     return message;
 }
 
+// Records of a FASTA file, counted by their '>' lines; -1 for anything that
+// is not FASTA. The reader drops a record without a sequence, and the number
+// n of every later query moves down by one.
+int count_fasta_records(const string &file)
+{
+    ifstream in(file.c_str());
+    if(!in)
+        return -1;
+    char c = in.get();
+    while(in && (c==' ' || c=='\n'))
+        c = in.get();
+    if(!in || c != '>')
+        return -1;
+    int n = 1;
+    string line;
+    getline(in, line);
+    while(getline(in, line))
+    {
+        if(!line.empty() && line[0] == '>')
+            n++;
+    }
+    return n;
+}
+
+void write_manifest_line(FILE *manifest, const string &manifest_file, const string &line)
+{
+    if(fputs(line.c_str(), manifest) == EOF || fflush(manifest) != 0)
+    {
+        Log_output::write_out("Error: writing '"+manifest_file+"' failed: "+strerror(errno)+".\nExiting.\n\n",0);
+        exit(1);
+    }
+}
+
 // The parent: one child per query, in file order; the outcomes go to
 // "<outfile>.queries.tsv". Returns main()'s exit status.
 int align_queries_independently(Node *root, Model_factory *mf, int count,
@@ -280,17 +465,40 @@ int align_queries_independently(Node *root, Model_factory *mf, int count,
     vector<Fasta_entry> queries;
     Reads_aligner::read_queries(&queries);
 
-    string manifest_file = outfile+".queries.tsv";
-    ofstream manifest(manifest_file.c_str());
-    if(!manifest)
+    int n_records = count_fasta_records(Settings_handle::st.get("queryfile").as<string>());
+    if(n_records > (int)queries.size())
     {
-        Log_output::write_out("Error: cannot write '"+manifest_file+"'.\nExiting.\n\n",0);
+        stringstream ws;
+        ws << "\nWarning: records without a sequence in the query file: "
+           << n_records-(int)queries.size() << " of " << n_records << ", dropped; the number n in '"
+           << outfile << ".<n>' and in the manifest counts the " << queries.size() << " records read.\n";
+        Log_output::write_out(ws.str(),0);
+    }
+
+    // FD_CLOEXEC: the programs a child starts must not hold the manifest.
+    string manifest_file = outfile+".queries.tsv";
+    int mfd = open(manifest_file.c_str(), O_WRONLY|O_CREAT|O_TRUNC, 0666);
+    FILE *manifest = 0;
+    if(mfd >= 0 && set_close_on_exec(mfd))
+        manifest = fdopen(mfd, "w");
+    if(manifest == 0)
+    {
+        int open_errno = errno;
+        if(mfd >= 0)
+            close(mfd);
+        errno = open_errno;
+        Log_output::write_out("Error: cannot write '"+manifest_file+"': "+strerror(errno)+".\nExiting.\n\n",0);
         exit(1);
     }
-    manifest << "query\tname\tstatus\tdetail\talignment\n";
-    manifest.flush();
+    write_manifest_line(manifest, manifest_file, "query\tname\tstatus\tdetail\talignment\n");
+
+    // Files an earlier run left under the names this run writes: one listing
+    // of the directory, removed query by query just before each one runs.
+    map<int, vector<string> > earlier = query_output_paths(outfile, 0);
 
     int n_placed = 0, n_unplaced = 0, n_failed = 0;
+    string cannot_fork_reason = "";
+    bool pdeathsig_warned = false;
 
     for(int i=0; i<(int)queries.size(); i++)
     {
@@ -299,39 +507,82 @@ int align_queries_independently(Node *root, Model_factory *mf, int count,
         stringstream qs;
         qs << outfile << "." << query_1based;
         string query_outfile = qs.str();
+        string alignment_file = query_outfile+fr->get_format_suffix(format);
 
         string detail;
-        string status = run_query_in_child(root,mf,count,iop,fr,sequences,&queries,i,query_outfile,&detail);
+        string status;
 
-        string alignment_file = "";
-        if(status == "placed")
+        if(cannot_fork_reason != "")
         {
-            alignment_file = query_outfile+fr->get_format_suffix(format);
-            n_placed++;
+            status = "failed";
+            detail = "not run: "+cannot_fork_reason;
         }
+        else
+        {
+            // A file of an earlier run must not pass for this run's.
+            if(earlier.count(query_1based))
+                remove_regular_files(earlier[query_1based]);
+
+            bool cannot_fork = false;
+            string pdeathsig_error = "";
+            status = run_query_in_child(root,mf,count,iop,fr,sequences,&queries,i,query_outfile,
+                                        &detail,&cannot_fork,&pdeathsig_error);
+            if(cannot_fork)
+            {
+                stringstream cs;
+                cs << detail << " at query " << query_1based;
+                cannot_fork_reason = cs.str();
+                detail += "; no later query is run";
+            }
+            if(pdeathsig_error != "" && !pdeathsig_warned)
+            {
+                Log_output::write_out("\nWarning: prctl(PR_SET_PDEATHSIG) failed in a query process ("+
+                                      pdeathsig_error+"): if this process is killed, its query processes run on.\n",0);
+                pdeathsig_warned = true;
+            }
+            if(status == "placed" && !is_nonempty_file(alignment_file))
+            {
+                status = "failed";
+                detail = "no alignment file written";
+            }
+            if(status == "failed")
+            {
+                vector<string> left = remove_regular_files(query_output_paths(outfile, query_1based)[query_1based]);
+                for(size_t k=0; k<left.size(); k++)
+                    detail += (k == 0 ? "; not removed: " : ", ")+left[k];
+            }
+        }
+
+        if(status == "placed")
+            n_placed++;
         else if(status == "unplaced")
             n_unplaced++;
         else
             n_failed++;
 
-        manifest << query_1based << "\t" << queries.at(i).name << "\t" << status << "\t"
-                 << detail << "\t" << alignment_file << "\n";
-        manifest.flush();
+        stringstream row;
+        row << query_1based << "\t" << manifest_field(queries.at(i).name) << "\t" << status << "\t"
+            << manifest_field(detail) << "\t" << (status == "placed" ? alignment_file : "") << "\n";
+        write_manifest_line(manifest, manifest_file, row.str());
 
         stringstream msg;
         msg << "\nQuery " << query_1based << "/" << queries.size() << " '" << queries.at(i).name << "': " << status;
         if(detail != "")
             msg << ", " << detail;
-        if(alignment_file != "")
+        if(status == "placed")
             msg << ", " << alignment_file;
         msg << "\n";
         Log_output::write_out(msg.str(),0);
     }
 
-    manifest.close();
-    if(!manifest)
+    // Every query has its row: say so, on a line a five-column reader skips.
+    stringstream trailer;
+    trailer << "# complete: " << queries.size() << " queries, " << n_placed << " placed, "
+            << n_unplaced << " unplaced, " << n_failed << " failed\n";
+    write_manifest_line(manifest, manifest_file, trailer.str());
+    if(fclose(manifest) != 0)
     {
-        Log_output::write_out("Error: writing '"+manifest_file+"' failed.\nExiting.\n\n",0);
+        Log_output::write_out("Error: writing '"+manifest_file+"' failed: "+strerror(errno)+".\nExiting.\n\n",0);
         exit(1);
     }
 

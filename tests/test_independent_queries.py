@@ -21,7 +21,9 @@ THE DATA (deterministic, standard library only, written under TMPDIR)
 
 WHAT IS CHECKED
   1. one --independent-queries run of all six: the manifest lists the six in
-     file order; each placed query's out.<n>.fas and out.<n>.nhx_tree are
+     file order, five tab-separated fields a row, and ends with the line
+     "# complete: 6 queries, 5 placed, 1 unplaced, 0 failed" (no tab in it);
+     each placed query's out.<n>.fas and out.<n>.nhx_tree are
      byte-identical to those of a run of that query alone, with the same
      options; the unrelated query is "unplaced" and, as alone, has no file;
   2. a second --independent-queries run writes byte-identical files;
@@ -98,6 +100,33 @@ def make_data(workdir):
     return [n for n, _ in queries]
 
 
+def read_manifest(path):
+    """(rows, trailer, problems): the rows of five fields, the final '#' line
+    or None, and what is wrong with the file's shape."""
+    problems = []
+    with open(path) as fh:
+        lines = fh.read().split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    if lines[:1] != ["query\tname\tstatus\tdetail\talignment"]:
+        problems.append("manifest header is %r" % (lines[:1],))
+    rows, trailer = [], None
+    for k, line in enumerate(lines[1:], 2):
+        if line.startswith("#"):
+            if k != len(lines):
+                problems.append("manifest line %d starts with '#' but is not the "
+                                "last line" % k)
+            trailer = line
+            continue
+        fields = line.split("\t")
+        if len(fields) != 5:
+            problems.append("manifest line %d has %d fields, not 5: %r"
+                            % (k, len(fields), line))
+            continue
+        rows.append(fields)
+    return rows, trailer, problems
+
+
 def run_pagan2(binary, workdir, label, queryfile, extra=(), reference=True):
     out_dir = os.path.join(workdir, label)
     os.makedirs(os.path.join(out_dir, "tmp"))
@@ -144,14 +173,14 @@ def main(argv):
         failures.append("no %s" % manifest)
         rows = []
     else:
-        with open(manifest) as fh:
-            lines = [l.rstrip("\n").split("\t") for l in fh]
-        if lines[:1] != [["query", "name", "status", "detail", "alignment"]]:
-            failures.append("manifest header is %r" % (lines[:1],))
-        rows = lines[1:]
+        rows, trailer, problems = read_manifest(manifest)
+        failures.extend(problems)
         if [(r[0], r[1]) for r in rows] != [(str(k), n) for k, n in enumerate(names, 1)]:
             failures.append("manifest lists %r, expected the queries in file order"
                             % [(r[0], r[1]) for r in rows])
+        expected = "# complete: 6 queries, 5 placed, 1 unplaced, 0 failed"
+        if trailer != expected:
+            failures.append("manifest ends with %r, expected %r" % (trailer, expected))
 
     n_identical = 0
     for k, name in enumerate(names, 1):
@@ -191,13 +220,15 @@ def main(argv):
         for f in produced:
             a, b = os.path.join(indep, f), os.path.join(again, f)
             if f == "out.queries.tsv":
-                same = (open(a).read().replace(indep, "") ==
-                        open(b).read().replace(again, ""))
+                with open(a) as fa, open(b) as fb:
+                    same = (fa.read().replace(indep, "") ==
+                            fb.read().replace(again, ""))
             else:
                 same = filecmp.cmp(a, b, shallow=False)
             if not same:
                 failures.append("the repeated independent run differs in %s" % f)
 
+    moved = []
     rc, batch = run_pagan2(binary, workdir, "batch", "queries.fas")
     batch_fas = os.path.join(batch, "out.fas")
     if rc != 0 or not os.path.isfile(batch_fas):
