@@ -51,13 +51,16 @@
 "                      then each query is placed and aligned ALONE in a child\n" \
 "                      forked from that state, to <outfile>.<n>.fas, and\n" \
 "                      <outfile>.queries.tsv lists every outcome; a crashed\n" \
-"                      child loses its query only. A query's result no longer\n" \
-"                      depends on the file it is in: 291 reads in 40- and\n" \
-"                      150-read files, run twice, 1116 of 1116 placements\n" \
-"                      byte-identical to the read run alone. 0.73-0.78 s per\n" \
-"                      read, against 1.30 s per one-read process and 1.16 /\n" \
-"                      2.35 s per read in a 40 / 145-read batch. Branch\n" \
-"                      feature/independent-queries; NOT submitted upstream.\n" \
+"                      child loses its query only. The manifest ends with\n" \
+"                      '# complete: N queries, ...' once every query has a\n" \
+"                      row; 'placed' means its file exists and is not empty.\n" \
+"                      A query's result no longer depends on the file it is\n" \
+"                      in: 291 reads in 40- and 150-read files, run twice,\n" \
+"                      1116 of 1116 placements byte-identical to the read run\n" \
+"                      alone. 0.73-0.78 s per read, against 1.30 s per\n" \
+"                      one-read process and 1.16 / 2.35 s per read in a 40 /\n" \
+"                      145-read batch. Branch feature/independent-queries;\n" \
+"                      NOT submitted upstream.\n" \
 "    +sites-index      correct_sites_index() summed a parent's index shift\n" \
 "                      only at the child sites the parent points at, missing\n" \
 "                      new columns beside a node's own insertions -- so a\n" \
