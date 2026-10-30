@@ -85,6 +85,6 @@
 "                      --independent-queries, and --no-bppancestors could\n" \
 "                      not stop it. On a node reading programs from shared\n" \
 "                      storage at ~65 ms an open it was about half of each\n" \
-"                      query's time. PR #25, draft.\n" \
+"                      query's time. PR #25, open.\n" \
 "  NOT an upstream release; see docs/issues/pagan2_quirks.md\n"
 #endif
