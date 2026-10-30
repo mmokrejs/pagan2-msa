@@ -598,10 +598,15 @@ void Input_output_parser::output_aligned_sequences(Fasta_reader *fr,std::vector<
         bool do_ancestors = Settings_handle::st.is("events") || Settings_handle::st.is("output-ancestors") || Settings_handle::st.is("ancestors")
                 || Settings_handle::st.is("xml") || Settings_handle::st.is("xml-nhx");
 
+        // The probe LAST: test_executable() runs `bppancestor` through
+        // system(3) -- a shell and bppancestor itself, twice when it is not
+        // beside this binary -- so it is paid only when ancestors are asked
+        // for, BppAncestors may be used, and --no-bppancestors is not given.
         BppAncestors bppa;
-        bool infer_bppa_ancestors = ( bppa.test_executable() && not Settings_handle::st.is("no-bppancestors") &&
+        bool infer_bppa_ancestors = ( not Settings_handle::st.is("no-bppancestors") &&
                                       ( do_ancestors ) &&
-                                      (int)sequences->size()<500 );
+                                      (int)sequences->size()<500 &&
+                                      bppa.test_executable() );
 
         if(infer_bppa_ancestors)
         {
