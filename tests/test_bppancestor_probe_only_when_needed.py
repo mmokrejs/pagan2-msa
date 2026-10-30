@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""bppancestor is probed only when ancestors are asked for.
+"""bppancestor is probed only when ancestors are asked for, and then once.
 
 Usage:
     python3 tests/test_bppancestor_probe_only_when_needed.py PAGAN2
@@ -8,9 +8,11 @@ BppAncestors::test_executable() asks whether bppancestor exists by RUNNING
 it through system(3): a shell and bppancestor itself, twice when it is not
 beside the pagan2 binary. Writing an alignment called it before looking at
 whether ancestors were wanted, so a placement run that asks for none paid it
-anyway -- once per run, and once per query with --independent-queries, where
-on a host that reads programs from slow shared storage it was most of each
-query's time. --no-bppancestors could not stop it either.
+anyway -- once per alignment written, so once per query with
+--independent-queries, where on a host that reads programs from slow shared
+storage it was most of each query's time. --no-bppancestors could not stop it
+either. Now it is asked only when ancestors are wanted, once per process,
+before any work, and processes forked later inherit the answer.
 
 THE CHECK. A stand-in `bppancestor`, first on PATH, records every start and
 exits 1 ("not usable"), so pagan2 falls back to its own ancestors and no run
@@ -19,8 +21,10 @@ depends on the real program. Counted:
   2. the same with --independent-queries, when the binary has that option:
      0 starts for three queries;
   3. with --output-ancestors and --no-bppancestors: 0 starts;
-  4. PREMISE, with --output-ancestors alone: at least 1 start -- the probe
-     still runs when it can matter, and the stand-in is what it finds.
+  4. with --output-ancestors: exactly 1 start -- the probe still runs when it
+     can matter (the PREMISE: the stand-in is what it finds), and once;
+  5. --independent-queries --output-ancestors, when the binary has that
+     option: exactly 1 start for three queries, not one per query.
 
 Exit 0 and a PASS line, or exit 1 naming what failed.
 """
@@ -114,9 +118,11 @@ def main(argv):
     failures = []
     cases = [("plain", [], 0),
              ("no_bppancestors", ["--output-ancestors", "--no-bppancestors"], 0),
-             ("ancestors", ["--output-ancestors"], None)]
+             ("ancestors", ["--output-ancestors"], 1)]
     if knows(binary, "--independent-queries"):
         cases.insert(1, ("independent", ["--independent-queries"], 0))
+        cases.append(("independent_ancestors",
+                      ["--independent-queries", "--output-ancestors"], 1))
     seen = {}
     for label, extra, want in cases:
         log = os.path.join(workdir, label + ".starts")
