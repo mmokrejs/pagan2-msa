@@ -77,5 +77,13 @@
 "                      Helpers (Exonerate) end with their own run, or with\n" \
 "                      the caller's process group if the group is killed.\n" \
 "                      Branch feature/independent-queries; NOT submitted.\n" \
+"    +bppa-probe       bppancestor is probed (system(3): a shell and up to\n" \
+"                      two bppancestor runs) only when ancestors are asked\n" \
+"                      for; it ran on every alignment written, so per query\n" \
+"                      with --independent-queries, and --no-bppancestors\n" \
+"                      could not stop it. On a node reading programs from\n" \
+"                      shared storage at ~65 ms an open it was about half of\n" \
+"                      each query's time. Branch\n" \
+"                      fix/bppancestor-probe-only-when-needed; NOT submitted.\n" \
 "  NOT an upstream release; see docs/issues/pagan2_quirks.md\n"
 #endif
