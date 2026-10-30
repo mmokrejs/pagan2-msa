@@ -79,10 +79,12 @@
 "                      Branch feature/independent-queries; NOT submitted.\n" \
 "    +bppa-probe       bppancestor is probed (system(3): a shell and up to\n" \
 "                      two bppancestor runs) only when ancestors are asked\n" \
-"                      for; it ran on every alignment written, so per query\n" \
-"                      with --independent-queries, and --no-bppancestors\n" \
-"                      could not stop it. On a node reading programs from\n" \
-"                      shared storage at ~65 ms an open it was about half of\n" \
-"                      each query's time. PR #25, draft.\n" \
+"                      for, and once per process, before any work: forked\n" \
+"                      query processes inherit the answer. It ran on every\n" \
+"                      alignment written, so per query with\n" \
+"                      --independent-queries, and --no-bppancestors could\n" \
+"                      not stop it. On a node reading programs from shared\n" \
+"                      storage at ~65 ms an open it was about half of each\n" \
+"                      query's time. PR #25, draft.\n" \
 "  NOT an upstream release; see docs/issues/pagan2_quirks.md\n"
 #endif
