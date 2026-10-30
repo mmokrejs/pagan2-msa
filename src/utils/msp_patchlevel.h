@@ -83,7 +83,6 @@
 "                      with --independent-queries, and --no-bppancestors\n" \
 "                      could not stop it. On a node reading programs from\n" \
 "                      shared storage at ~65 ms an open it was about half of\n" \
-"                      each query's time. Branch\n" \
-"                      fix/bppancestor-probe-only-when-needed; NOT submitted.\n" \
+"                      each query's time. PR #25, draft.\n" \
 "  NOT an upstream release; see docs/issues/pagan2_quirks.md\n"
 #endif
